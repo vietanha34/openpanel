@@ -12,6 +12,7 @@ import {
   TABLE_NAMES,
   validateOverviewShareAccess,
   zGetMapDataInput,
+  zGetEventAnalyticsInput,
   zGetMetricsInput,
   zGetTopEventsInput,
   zGetTopGenericInput,
@@ -472,6 +473,27 @@ export const overviewRouter = createTRPCRouter({
         false,
         timezone
       )(overviewService.getTopEvents.bind(overviewService));
+
+      return current;
+    }),
+
+  eventAnalytics: overviewProcedure
+    .input(
+      zGetEventAnalyticsInput.omit({ startDate: true, endDate: true }).extend({
+        startDate: z.string().nullish(),
+        endDate: z.string().nullish(),
+        range: zRange,
+        shareId: z.string().optional(),
+      })
+    )
+    .use(cacher)
+    .query(async ({ input }) => {
+      const { timezone } = await getSettingsForProject(input.projectId);
+      const { current } = await getCurrentAndPrevious(
+        { ...input, timezone },
+        false,
+        timezone
+      )(overviewService.getEventAnalytics.bind(overviewService));
 
       return current;
     }),

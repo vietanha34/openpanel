@@ -91,6 +91,7 @@ import { Route as AppOrganizationIdProjectIdGroupsGroupIdTabsRouteImport } from 
 import { Route as AppOrganizationIdProjectIdEventsTabsStatsRouteImport } from './routes/_app.$organizationId.$projectId.events._tabs.stats'
 import { Route as AppOrganizationIdProjectIdEventsTabsEventsRouteImport } from './routes/_app.$organizationId.$projectId.events._tabs.events'
 import { Route as AppOrganizationIdProjectIdEventsTabsConversionsRouteImport } from './routes/_app.$organizationId.$projectId.events._tabs.conversions'
+import { Route as AppOrganizationIdProjectIdEventsTabsAnalyticsRouteImport } from './routes/_app.$organizationId.$projectId.events._tabs.analytics'
 import { Route as AppOrganizationIdProjectIdCohortsCohortIdTabsRouteImport } from './routes/_app.$organizationId.$projectId.cohorts_.$cohortId._tabs'
 import { Route as AppOrganizationIdProjectIdProfilesProfileIdTabsIndexRouteImport } from './routes/_app.$organizationId.$projectId.profiles.$profileId._tabs.index'
 import { Route as AppOrganizationIdProjectIdGroupsGroupIdTabsIndexRouteImport } from './routes/_app.$organizationId.$projectId.groups_.$groupId._tabs.index'
@@ -637,6 +638,12 @@ const AppOrganizationIdProjectIdEventsTabsConversionsRoute =
     path: '/conversions',
     getParentRoute: () => AppOrganizationIdProjectIdEventsTabsRoute,
   } as any)
+const AppOrganizationIdProjectIdEventsTabsAnalyticsRoute =
+  AppOrganizationIdProjectIdEventsTabsAnalyticsRouteImport.update({
+    id: '/analytics',
+    path: '/analytics',
+    getParentRoute: () => AppOrganizationIdProjectIdEventsTabsRoute,
+  } as any)
 const AppOrganizationIdProjectIdCohortsCohortIdTabsRoute =
   AppOrganizationIdProjectIdCohortsCohortIdTabsRouteImport.update({
     id: '/_tabs',
@@ -750,6 +757,7 @@ export interface FileRoutesByFullPath {
   '/$organizationId/account/': typeof AppOrganizationIdAccountTabsIndexRoute
   '/$organizationId/members/': typeof AppOrganizationIdMembersTabsIndexRoute
   '/$organizationId/$projectId/cohorts/$cohortId': typeof AppOrganizationIdProjectIdCohortsCohortIdTabsRouteWithChildren
+  '/$organizationId/$projectId/events/analytics': typeof AppOrganizationIdProjectIdEventsTabsAnalyticsRoute
   '/$organizationId/$projectId/events/conversions': typeof AppOrganizationIdProjectIdEventsTabsConversionsRoute
   '/$organizationId/$projectId/events/events': typeof AppOrganizationIdProjectIdEventsTabsEventsRoute
   '/$organizationId/$projectId/events/stats': typeof AppOrganizationIdProjectIdEventsTabsStatsRoute
@@ -834,6 +842,7 @@ export interface FileRoutesByTo {
   '/$organizationId/members/invitations': typeof AppOrganizationIdMembersTabsInvitationsRoute
   '/$organizationId/members/members': typeof AppOrganizationIdMembersTabsMembersRoute
   '/$organizationId/$projectId/cohorts/$cohortId': typeof AppOrganizationIdProjectIdCohortsCohortIdTabsIndexRoute
+  '/$organizationId/$projectId/events/analytics': typeof AppOrganizationIdProjectIdEventsTabsAnalyticsRoute
   '/$organizationId/$projectId/events/conversions': typeof AppOrganizationIdProjectIdEventsTabsConversionsRoute
   '/$organizationId/$projectId/events/events': typeof AppOrganizationIdProjectIdEventsTabsEventsRoute
   '/$organizationId/$projectId/events/stats': typeof AppOrganizationIdProjectIdEventsTabsStatsRoute
@@ -927,6 +936,7 @@ export interface FileRoutesById {
   '/_app/$organizationId/members/_tabs/': typeof AppOrganizationIdMembersTabsIndexRoute
   '/_app/$organizationId/$projectId/cohorts_/$cohortId': typeof AppOrganizationIdProjectIdCohortsCohortIdRouteWithChildren
   '/_app/$organizationId/$projectId/cohorts_/$cohortId/_tabs': typeof AppOrganizationIdProjectIdCohortsCohortIdTabsRouteWithChildren
+  '/_app/$organizationId/$projectId/events/_tabs/analytics': typeof AppOrganizationIdProjectIdEventsTabsAnalyticsRoute
   '/_app/$organizationId/$projectId/events/_tabs/conversions': typeof AppOrganizationIdProjectIdEventsTabsConversionsRoute
   '/_app/$organizationId/$projectId/events/_tabs/events': typeof AppOrganizationIdProjectIdEventsTabsEventsRoute
   '/_app/$organizationId/$projectId/events/_tabs/stats': typeof AppOrganizationIdProjectIdEventsTabsStatsRoute
@@ -1019,6 +1029,7 @@ export interface FileRouteTypes {
     | '/$organizationId/account/'
     | '/$organizationId/members/'
     | '/$organizationId/$projectId/cohorts/$cohortId'
+    | '/$organizationId/$projectId/events/analytics'
     | '/$organizationId/$projectId/events/conversions'
     | '/$organizationId/$projectId/events/events'
     | '/$organizationId/$projectId/events/stats'
@@ -1103,6 +1114,7 @@ export interface FileRouteTypes {
     | '/$organizationId/members/invitations'
     | '/$organizationId/members/members'
     | '/$organizationId/$projectId/cohorts/$cohortId'
+    | '/$organizationId/$projectId/events/analytics'
     | '/$organizationId/$projectId/events/conversions'
     | '/$organizationId/$projectId/events/events'
     | '/$organizationId/$projectId/events/stats'
@@ -1195,6 +1207,7 @@ export interface FileRouteTypes {
     | '/_app/$organizationId/members/_tabs/'
     | '/_app/$organizationId/$projectId/cohorts_/$cohortId'
     | '/_app/$organizationId/$projectId/cohorts_/$cohortId/_tabs'
+    | '/_app/$organizationId/$projectId/events/_tabs/analytics'
     | '/_app/$organizationId/$projectId/events/_tabs/conversions'
     | '/_app/$organizationId/$projectId/events/_tabs/events'
     | '/_app/$organizationId/$projectId/events/_tabs/stats'
@@ -1883,6 +1896,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppOrganizationIdProjectIdEventsTabsConversionsRouteImport
       parentRoute: typeof AppOrganizationIdProjectIdEventsTabsRoute
     }
+    '/_app/$organizationId/$projectId/events/_tabs/analytics': {
+      id: '/_app/$organizationId/$projectId/events/_tabs/analytics'
+      path: '/analytics'
+      fullPath: '/$organizationId/$projectId/events/analytics'
+      preLoaderRoute: typeof AppOrganizationIdProjectIdEventsTabsAnalyticsRouteImport
+      parentRoute: typeof AppOrganizationIdProjectIdEventsTabsRoute
+    }
     '/_app/$organizationId/$projectId/cohorts_/$cohortId/_tabs': {
       id: '/_app/$organizationId/$projectId/cohorts_/$cohortId/_tabs'
       path: '/cohorts/$cohortId'
@@ -1957,6 +1977,7 @@ declare module '@tanstack/react-router' {
 }
 
 interface AppOrganizationIdProjectIdEventsTabsRouteChildren {
+  AppOrganizationIdProjectIdEventsTabsAnalyticsRoute: typeof AppOrganizationIdProjectIdEventsTabsAnalyticsRoute
   AppOrganizationIdProjectIdEventsTabsConversionsRoute: typeof AppOrganizationIdProjectIdEventsTabsConversionsRoute
   AppOrganizationIdProjectIdEventsTabsEventsRoute: typeof AppOrganizationIdProjectIdEventsTabsEventsRoute
   AppOrganizationIdProjectIdEventsTabsStatsRoute: typeof AppOrganizationIdProjectIdEventsTabsStatsRoute
@@ -1965,6 +1986,8 @@ interface AppOrganizationIdProjectIdEventsTabsRouteChildren {
 
 const AppOrganizationIdProjectIdEventsTabsRouteChildren: AppOrganizationIdProjectIdEventsTabsRouteChildren =
   {
+    AppOrganizationIdProjectIdEventsTabsAnalyticsRoute:
+      AppOrganizationIdProjectIdEventsTabsAnalyticsRoute,
     AppOrganizationIdProjectIdEventsTabsConversionsRoute:
       AppOrganizationIdProjectIdEventsTabsConversionsRoute,
     AppOrganizationIdProjectIdEventsTabsEventsRoute:

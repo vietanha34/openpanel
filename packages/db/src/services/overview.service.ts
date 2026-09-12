@@ -182,6 +182,55 @@ export type IGetTopEventsInput = z.infer<typeof zGetTopEventsInput> & {
   timezone: string;
 };
 
+export const zGetEventAnalyticsInput = zGetTopEventsInput;
+export type IGetEventAnalyticsInput = z.infer<typeof zGetEventAnalyticsInput> & {
+  timezone: string;
+};
+
+export function buildEventAnalyticsQuery({
+  projectId,
+  filters,
+  startDate,
+  endDate,
+  timezone,
+}: IGetEventAnalyticsInput) {
+  const where = new OverviewService(ch).getRawWhereClause('events', filters);
+  const baseEvents = clix(ch, timezone)
+    .select(['name', 'profile_id'])
+    .from(TABLE_NAMES.events, false)
+    .where('project_id', '=', projectId)
+    .where('created_at', 'BETWEEN', [
+      clix.datetime(startDate, 'toDateTime'),
+      clix.datetime(endDate, 'toDateTime'),
+    ])
+    .rawWhere(where);
+  const stats = clix(ch, timezone)
+    .select(['name', 'count() AS events', 'uniqExact(profile_id) AS users'])
+    .from('base_events')
+    .groupBy(['name']);
+  const totals = clix(ch, timezone)
+    .select(['count() AS total_events', 'uniqExact(profile_id) AS total_users'])
+    .from('base_events');
+
+  return clix(ch, timezone)
+    .with('base_events', baseEvents)
+    .with('event_stats', stats)
+    .with('event_totals', totals)
+    .select([
+      'name',
+      'events',
+      'users',
+      'total_events',
+      'total_users',
+      'events / total_events AS event_percentage',
+      'events / users AS events_per_user',
+      'users / total_users AS user_percentage',
+    ])
+    .from('event_stats')
+    .crossJoin('event_totals')
+    .orderBy('events', 'DESC');
+}
+
 export const zGetTopLinkOutInput = z.object({
   projectId: z.string(),
   filters: z.array(z.any()),
@@ -1396,6 +1445,10 @@ export class OverviewService {
       .limit(MAX_RECORDS_LIMIT);
 
     return query.execute();
+  }
+
+  async getEventAnalytics(input: IGetEventAnalyticsInput) {
+    return buildEventAnalyticsQuery(input).execute();
   }
 
   async getTopLinkOut({

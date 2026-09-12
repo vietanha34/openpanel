@@ -26,6 +26,7 @@ function Component() {
 
   const { activeTab, tabs } = usePageTabs([
     { id: 'events', label: 'Events' },
+    { id: 'analytics', label: 'Analytics' },
     { id: 'conversions', label: 'Conversions' },
     { id: 'stats', label: 'Stats' },
   ]);
