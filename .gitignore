@@ -189,5 +189,6 @@ dist
 .DS_Store
 
 .worktrees/
+.dev.vars*
 
 *.tsbuildinfo
