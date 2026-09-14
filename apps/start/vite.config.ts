@@ -24,7 +24,22 @@ if (process.env.NITRO) {
     }),
   );
 } else {
-  plugins.unshift(cloudflare({ viteEnvironment: { name: 'ssr' } }));
+  plugins.unshift(
+    cloudflare({
+      viteEnvironment: { name: 'ssr' },
+      config(config) {
+        if (process.env.NODE_ENV !== 'development') return;
+        return {
+          vars: {
+            ...config.vars,
+            API_URL: process.env.API_URL || 'http://localhost:3333',
+            DASHBOARD_URL:
+              process.env.DASHBOARD_URL || 'http://localhost:3000',
+          },
+        };
+      },
+    }),
+  );
 }
 
 const config = defineConfig({
