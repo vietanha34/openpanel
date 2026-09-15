@@ -1,3 +1,4 @@
+import { EVENT_ANALYTICS_MAX_DEPTH } from '@openpanel/validation';
 import { describe, expect, it } from 'vitest';
 import {
   MAX_LEVEL,
@@ -64,6 +65,10 @@ describe('badgeFor', () => {
 });
 
 describe('canExpand', () => {
+  it('takes its limit from the contract, not from a copy of the number', () => {
+    expect(MAX_LEVEL).toBe(EVENT_ANALYTICS_MAX_DEPTH);
+  });
+
   it('allows children up to the contract depth limit', () => {
     expect(MAX_LEVEL).toBe(4);
     expect(canExpand(1)).toBe(true);

@@ -1,3 +1,4 @@
+import { EVENT_ANALYTICS_MAX_DEPTH } from '@openpanel/validation';
 import type {
   IEventAnalyticsMetricRow,
   IEventAnalyticsPropertyType,
@@ -5,16 +6,13 @@ import type {
   IEventAnalyticsSortKey,
 } from '@openpanel/validation';
 
-/**
- * Pure helpers for the event analytics tree. Types only are imported so this
- * module runs under a plain vitest config without the `@/` path alias.
- */
+/** Pure helpers for the event analytics tree. */
 
 /** Horizontal step per tree depth, matching the design's `flatten()`. */
 export const INDENT_PX = 22;
 
-/** Mirrors EVENT_ANALYTICS_MAX_DEPTH in packages/validation/src/event-analytics.ts. */
-export const MAX_LEVEL = 4;
+/** How deep below an event a node may sit. Owned by the shared contract. */
+export const MAX_LEVEL = EVENT_ANALYTICS_MAX_DEPTH;
 
 const DASH = '—';
 

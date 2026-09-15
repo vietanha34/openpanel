@@ -253,7 +253,7 @@ export function NodeErrorRow({
   );
 }
 
-function LoadingRow({ depth }: { depth: number }) {
+function NoteRow({ depth, text }: { depth: number; text: string }) {
   return (
     <div className="flex w-full items-center border-b">
       <div
@@ -261,7 +261,7 @@ function LoadingRow({ depth }: { depth: number }) {
         style={indentStyle(depth)}
       >
         <span className="size-4 shrink-0" />
-        <span className="text-[13px] text-muted-foreground">Loading…</span>
+        <span className="text-[13px] text-muted-foreground">{text}</span>
       </div>
     </div>
   );
@@ -275,6 +275,7 @@ function PropertyKeysBranch({
   parentPath,
   depth,
   level,
+  emptyText,
 }: {
   ctx: TreeContextValue;
   event: string;
@@ -284,6 +285,11 @@ function PropertyKeysBranch({
   parentPath: IEventAnalyticsParentPathItem[];
   depth: number;
   level: number;
+  /**
+   * Shown when the branch comes back empty. A key always has at least one
+   * value, but a value may genuinely carry no nested keys.
+   */
+  emptyText?: string;
 }) {
   const trpc = useTRPC();
   const query = useInfiniteQuery(
@@ -313,10 +319,14 @@ function PropertyKeysBranch({
   }
 
   if (query.isPending) {
-    return <LoadingRow depth={depth} />;
+    return <NoteRow depth={depth} text="Loading…" />;
   }
 
   const rows = query.data.pages.flatMap((page) => page.rows);
+
+  if (rows.length === 0 && emptyText) {
+    return <NoteRow depth={depth} text={emptyText} />;
+  }
 
   return (
     <>
@@ -460,7 +470,7 @@ function PropertyValuesBranch({
   }
 
   if (query.isPending) {
-    return <LoadingRow depth={depth} />;
+    return <NoteRow depth={depth} text="Loading…" />;
   }
 
   const pages = query.data.pages;
@@ -544,6 +554,7 @@ function PropertyValueNode({
           parentPath={[{ key: propertyKey, value }]}
           depth={depth + 1}
           level={level + 1}
+          emptyText="No nested properties"
         />
       ) : null}
     </>
