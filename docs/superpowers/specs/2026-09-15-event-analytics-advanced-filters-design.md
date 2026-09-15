@@ -3,7 +3,7 @@
 Date: 2026-09-15
 Branch: `feature/event-analytics`
 Task: T7 of `docs/superpowers/specs/2026-09-15-event-analytics-tree-design.md` §5.
-Design source: Claude Design project `cde63790-13aa-464a-851a-edf3a279a8e3`, file `EventAnalyticsScreen.dc.html`, panel "Advanced filters".
+Design source: Claude Design project `233791a0-310f-443c-8118-b345c9f77b7d`, file `EventAnalyticsScreen.dc.html` (824 lines), panel "Advanced filters" (`filtersOpen` prop, `filterGroups` view model).
 
 > Spec only. No implementation until the spec is approved.
 
@@ -174,27 +174,45 @@ Empty string counts as missing. ClickHouse `Map(String,String)` returns `''` for
 
 ## 6. UI
 
-`apps/start/src/components/filters/FiltersBuilder.tsx` gains a group-aware mode. It keeps its current flat props as the default so the five existing call sites do not change:
+Read from the design file, not inferred: the panel is a 600px popover anchored to a "Filters" toolbar button. The button carries a count badge (`filterCount` = number of active conditions) that is hidden when the count is zero, and inverts to dark when the panel is open.
+
+**Header.** `Advanced filters` on the left, then the label `Match` and a two-segment `AND` / `OR` toggle. This is the root group's operator — there is exactly one root-level toggle, which confirms §3's root-plus-one-level shape.
+
+**Body.** The design renders the groups as a *flat, ordered list of group cards* (`filterGroups`), each carrying its own `level` and `indent`, rather than as nested DOM. Level 1 sits at `indent: 0`, level 2 at `indent: 22px` with a tinted background (`#FAFBFD`). The implementation should flatten the tree the same way (`flattenGroups(root) -> { group, level, indent }[]`); it keeps the markup shallow and matches the table's own 22px-per-depth indentation.
+
+Each group card has:
+
+- A **scope badge** (`USER PROPERTY`, `EVENT PROPERTY`), a **hint** describing the group's operator in words (`All conditions must match` / `Any condition may match`), and a monospace `LEVEL n` marker.
+- **Condition rows**: a 34px right-aligned monospace **join column** — empty on the first row, the group's operator (`AND` / `OR`) on every subsequent row — then the property field, a fixed 118px operator field, the value field, and an `x` remove button.
+- A footer with `+ Condition` and `+ Nested group`.
+
+The group's operator is therefore surfaced twice — as the per-row join word and as the hint sentence — but the design shows no per-group toggle control. The implementation makes the join word itself the control: clicking `AND` / `OR` in the join column flips the group's operator, with the hint sentence updating to match. That adds no chrome the design does not show while keeping the operator reachable.
+
+**Nesting limit, as designed.** In the level-2 card, `+ Nested group` is *present but disabled*: `cursor: not-allowed`, `opacity: 0.5`, `title: "Nesting is limited to two levels"`, next to a grey note `Max 2 nesting levels`. Match this exactly.
+
+**Footer.** `Applies to chart and table` on the left, then `Clear` and a primary `Apply filters` button that closes the panel. Edits inside the panel are therefore **staged**: the report does not re-query on each keystroke, only on `Apply`. `Clear` empties the root group. Closing the panel without pressing `Apply` discards the staged edit.
+
+**Active chips.** Below the toolbar sits a row of pills (`platform = iOS`, `app_version ≥ 3.4.0`) each with an `x`, followed by `Clear all`, and the empty state `No property filters — showing all traffic`. The chips are the flattened applied conditions; removing one removes that condition from its group and re-queries immediately (chips act on the applied state, not the staged one). A group left with no conditions is removed with its last chip.
+
+**Property naming.** The design writes user-scoped properties as `user.country` and event-scoped ones as `<event>.<property>` (`level_start.level_id`). Existing `IChartEventFilter.name` values already use `profile.*` for the former; event property filters stay `properties.*` on the wire, with the event-qualified form used only as the display label.
+
+**Operator labels.** The design shows `is one of`, `is not`, `equals`, `≥`. The repo's `operators` / `operatorsShort` already cover these (`is`, `isNot`, `gte`); rendering `is` as `equals` for a single value and `is one of` for several is a label-only refinement of the existing select, not a new operator. The two new operators from §3 (`hasProperty`, `missingProperty`) do not appear in the mockup's sample rows; they go at the bottom of the operator select and hide the value field when chosen.
+
+**Component reuse.** `apps/start/src/components/filters/FiltersBuilder.tsx` gains a group-aware mode; its current flat props stay the default so the five existing call sites do not change:
 
 ```ts
 value: IChartEventFilter[]; onChange: (next: IChartEventFilter[]) => void;   // existing
 group?: IFilterGroup; onGroupChange?: (next: IFilterGroup) => void;          // new
 ```
 
-When `group` is supplied the component renders the tree; otherwise it renders today's list. The condition row itself is unchanged — `PureFilterItem` and `PureCohortFilterItem` are reused as-is.
+The condition row itself is unchanged — `PureFilterItem` and `PureCohortFilterItem` are reused as-is.
 
-Layout, matching the design's "Advanced filters" panel:
+Saving is blocked while any condition has an operator that needs values and an empty value list; the row is marked invalid inline and `Apply filters` is disabled. This is what keeps §5.2's drop rule from ever firing on user input.
 
-- Root group: an `AND` / `OR` segmented toggle in the header; children stacked below.
-- Condition row: property combobox, operator select, value input, remove button (today's row).
-- Sub-group: indented block with its own `AND` / `OR` toggle, a left rule, its own "Add condition" button, and a remove button. No "Add group" button inside a sub-group — the second level is the last one, so the affordance simply does not exist rather than appearing and erroring.
-- Root footer: "Add condition" and "Add group".
-- The operator select shows "Has property" / "Missing property" in a separate section at the bottom of the list and hides the value input when either is chosen.
-- Saving is blocked while any condition has an operator that needs values and an empty value list; the row is marked invalid inline. This is what keeps §5.2's drop rule from ever firing on user input.
+Chart and table share one group, as the footer states. The Event Analytics route holds it in state and passes it to `eventAnalyticsList` / `eventAnalyticsTotals` / the tree endpoints and to the chart query, exactly as `filters` is passed today.
 
-Chart and table share one group: the Event Analytics route holds it in state and passes it to both `eventAnalyticsList` / `eventAnalyticsTotals` / the tree endpoints and to the chart query, exactly as `filters` is passed today.
+Event Analytics URL state (`use-event-query-filters.ts`) keeps the existing flat param and adds one `fg` param holding the JSON-encoded applied group. When `fg` parses, it wins; otherwise the flat param is used. An `fg` value that fails `zFilterGroup` is discarded with a toast rather than throwing, so a hand-edited or truncated URL degrades to the flat filters instead of breaking the page. The design has no routing, so this part is not design-derived (see A9).
 
-Event Analytics URL state (`use-event-query-filters.ts`) keeps the existing flat param and adds one `fg` param holding the JSON-encoded group. When `fg` parses, it wins; otherwise the flat param is used. An `fg` value that fails `zFilterGroup` is discarded with a toast rather than throwing, so a hand-edited or truncated URL degrades to the flat filters instead of breaking the page.
 
 ## 7. Error handling
 
@@ -237,16 +255,30 @@ Alternative: restrict to `properties.*`. Rejected — "is this column empty" is 
 **A7 — One group per surface, shared by chart and table.**
 Alternative: separate chart and table filters. Rejected: the design shows a single "Advanced filters" panel above both, and divergent filters would make the chart and the table disagree about the same numbers.
 
-**A8 — Sub-groups hold conditions only, and the "Add group" button is absent there.**
-Alternative: show the button disabled with a tooltip. Rejected — an affordance that exists only to refuse is worse than no affordance.
+**A8 — Sub-groups hold conditions only; `+ Nested group` is shown disabled there.**
+An earlier draft of this spec hid the button entirely. The design file settles it: the level-2 card keeps the button with `cursor: not-allowed`, `opacity: 0.5`, `title: "Nesting is limited to two levels"` and a `Max 2 nesting levels` note. The disabled affordance teaches the limit instead of leaving the user wondering where the option went. Spec follows the design.
 
 **A9 — `fg` URL param carries JSON.**
 Alternatives: a compact custom encoding, or storing the group server-side and putting an id in the URL. Rejected as premature: JSON is what the existing filter params already carry, and no measurement says the URLs are too long.
+
+**A10 — The scope badge (`USER PROPERTY` / `EVENT PROPERTY`) is a derived label, not a constraint.**
+The design shows one badge per group, and in the sample each group happens to be single-scope. This spec computes the badge from the conditions the group holds and shows `MIXED` when they disagree, rather than forbidding mixed groups. Alternative: make scope a real property of the group and restrict which conditions may be added. Rejected as a much larger model change that the design does not clearly demand — see question 4.
+
+**A11 — Panel edits are staged; `Apply filters` commits.**
+The design's footer has an explicit `Apply filters` button, so the panel cannot be live-updating. Alternative: apply on every change and treat the button as a close affordance. Rejected — it would re-query ClickHouse on every keystroke in a value field.
+
+**A12 — Chips act on the applied group and remove immediately.**
+Alternative: make chip removal staged too. Rejected — the chips sit outside the panel and have no Apply button of their own, so staging them would leave no way to commit.
+
+**A13 — The join word in the row gutter is the group-operator control.**
+The design shows the join word (`AND` / `OR`) per row and describes the operator in the hint sentence, but shows no per-group toggle. Alternative: add a toggle to each group header mirroring the root's. Rejected — it adds chrome the design does not have; making the existing word clickable does not.
 
 ## 10. Questions for the user
 
 1. **A3** — is the lossy flat mirror acceptable, or should a saved report that uses OR/sub-groups be unreadable by old clients instead of under-filtered?
 2. **A4** — should an explicitly-empty property value (`prop=""`) count as *present* for `hasProperty`? Answering yes needs a change at ingest, not here.
 3. Should `missingProperty` be offered for **cohort** filters (`inCohort` / `notInCohort` share the operator select)? This spec excludes it.
-4. Scope check: this spec converts every `getEventFiltersWhereClause` / `buildFilterWhere` call site to the group API. Should the first implementation instead limit itself to the Event Analytics surfaces and convert the rest later?
-5. The design panel could not be read while writing this spec (`DesignSync` requires an interactive `/design-login` that is unavailable here). §6's layout is reconstructed from the tree-design spec's description of the panel; please confirm it against the actual design file.
+4. **A10** — is the scope badge purely informational, or should a group be restricted to a single property scope (all user properties or all event properties)? The design's sample has one of each but never shows a mixed group.
+5. Scope check: this spec converts every `getEventFiltersWhereClause` / `buildFilterWhere` call site to the group API. Should the first implementation instead limit itself to the Event Analytics surfaces and convert the rest later?
+6. **A13** — is a clickable join word discoverable enough as the group-operator control, or should each group header get its own `AND` / `OR` toggle like the root?
+7. **A11** — should `Clear` in the panel footer clear the staged group only, or also clear the applied filters immediately (like `Clear all` on the chip row does)?
