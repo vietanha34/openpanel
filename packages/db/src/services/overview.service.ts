@@ -1735,9 +1735,9 @@ export class OverviewService {
   async getEventPropertyKeys(
     input: IGetEventPropertyKeysInput
   ): Promise<IEventPropertyKeysOutput> {
-    const rows = await buildEventPropertyKeysQuery(input).execute<
-      Parameters<typeof toEventPropertyKeyRows>[0][number]
-    >();
+    const rows = (await buildEventPropertyKeysQuery(
+      input
+    ).execute()) as EventPropertyKeySqlRow[];
 
     return toEventPropertyKeyRows(rows, input);
   }

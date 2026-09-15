@@ -4,9 +4,12 @@ import {
 } from '@openpanel/validation';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
+import sqlstring from 'sqlstring';
+
 import { ch } from '../clickhouse/client';
 import {
   buildEventPropertyKeysQuery,
+  overviewService,
   toEventPropertyKeyRows,
 } from './overview.service';
 
@@ -161,5 +164,70 @@ describe('toEventPropertyKeyRows', () => {
     });
 
     expect(nextCursor).toBeNull();
+  });
+});
+
+// Numbers, not SQL shape: the dedup and type rules only hold end to end.
+describe('getEventPropertyKeys against ClickHouse', () => {
+  const projectId = 'test-event-property-keys-exec';
+  const fixture = [
+    // One event carrying three keys under `payload` -- it must count once.
+    { profile_id: 'u1', properties: { 'payload.a': '1', 'payload.b': '2', score: '10' } },
+    { profile_id: 'u2', properties: { 'payload.a': '3', score: '20' } },
+    // `score` also arrives as text, which flips its inferred type to `str`.
+    { profile_id: 'u2', properties: { score: 'ten' } },
+  ];
+
+  beforeAll(async () => {
+    if (!chReachable) return;
+    await ch.insert({
+      table: 'events',
+      format: 'JSONEachRow',
+      values: fixture.map((row, i) => ({
+        id: `00000000-0000-4000-8000-00000000000${i}`,
+        name: 'level_finish',
+        project_id: projectId,
+        profile_id: row.profile_id,
+        properties: row.properties,
+        created_at: '2026-09-01 12:00:00.000',
+      })),
+    });
+  });
+
+  afterAll(async () => {
+    if (!chReachable) return;
+    await ch.command({
+      query: `ALTER TABLE events DELETE WHERE project_id = ${sqlstring.escape(projectId)}`,
+    });
+  });
+
+  it('counts an event once per object and infers the type from every value', async (ctx) => {
+    if (!chReachable) ctx.skip('ClickHouse not reachable at CLICKHOUSE_URL');
+
+    const { rows } = await overviewService.getEventPropertyKeys({
+      ...base,
+      projectId,
+    });
+
+    expect(rows).toEqual([
+      // 3 events carry `score`, 2 carry something under `payload`.
+      { key: 'score', events: 3, users: 2, kind: 'key', type: 'str' },
+      { key: 'payload', events: 2, users: 2, kind: 'obj', type: 'unknown' },
+    ]);
+  });
+
+  it('lists the keys inside an object and types them on their own values', async (ctx) => {
+    if (!chReachable) ctx.skip('ClickHouse not reachable at CLICKHOUSE_URL');
+
+    const { rows } = await overviewService.getEventPropertyKeys({
+      ...base,
+      projectId,
+      prefix: 'payload.',
+    });
+
+    expect(rows).toEqual([
+      { key: 'a', events: 2, users: 2, kind: 'key', type: 'num' },
+      { key: 'b', events: 1, users: 1, kind: 'key', type: 'num' },
+    ]);
   });
 });
