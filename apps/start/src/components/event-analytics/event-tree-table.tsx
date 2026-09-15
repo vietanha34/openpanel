@@ -150,7 +150,7 @@ export function EventTreeTable({
         <input
           type="text"
           aria-label="Search events"
-          placeholder="Search event, path or value"
+          placeholder="Search events"
           className="min-w-0 flex-1 bg-transparent text-[13px] outline-none"
           value={search}
           onChange={(event) => setSearch(event.target.value)}
@@ -213,6 +213,12 @@ export function EventTreeTable({
         </span>{' '}
         unique, so child rows never add up to the totals row.
       </div>
+
+      {listQuery.isPending ? (
+        <div className="border-b px-3.5 py-2 text-[13px] text-muted-foreground">
+          Loading…
+        </div>
+      ) : null}
 
       {listQuery.isError ? (
         <div className="flex items-center gap-2.5 border-b bg-destructive/5 px-3.5 py-2">
