@@ -2,7 +2,7 @@
 
 Date: 2026-09-15
 Branch/worktree: `feature/event-analytics` at `.worktrees/event-analytics`
-Design source: Claude Design project `cde63790-13aa-464a-851a-edf3a279a8e3`, file `EventAnalyticsScreen.dc.html` (imports `ds-bundle.js`, `support.js`)
+Design source: Claude Design project `233791a0-310f-443c-8118-b345c9f77b7d`, file `EventAnalyticsScreen.dc.html` (imports `ds-bundle.js`, `support.js`)
 Requirements: `/Users/vietanha34/Documents/project/AppMetrica/outputs/de-xuat-2026-09-07/01_Pham_vi_Du_an_v1.4.md` §5.2–5.3, `/Users/vietanha34/Documents/project/AppMetrica/01_Phan-tich-va-Yeu-cau_v0.1.md` FR-04
 
 ## 1. Goal
