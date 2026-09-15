@@ -61,7 +61,7 @@ input:  Range & { event: string; key: string; type: 'num' | 'str' | 'unknown'; p
 output: { rows: (MetricRow & { value: string })[]; remaining: number; nextCursor: number | null }
 ```
 
-`parentPath` narrows rows to events where each listed key equals its value (drill under a value node, e.g. `level_mode = hard` → nested keys). Depth limit: 4 levels below the event.
+`parentPath` narrows rows to events where each listed key equals its value (drill under a value node, e.g. `level_mode = hard` → nested keys). Depth limit: 4 levels below the event. Depth counts tree levels, where a key is one level and a value is one level (key=1, value=2, nested key=3, value of that key=4); since the node being queried occupies a level of its own, `parentPath` carries at most 1 entry.
 
 Wave 0 also adds router stubs in `packages/trpc/src/routers/overview.ts` returning deterministic mock data matching the design's `tree` sample, so frontend tasks run before backend lands.
 

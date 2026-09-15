@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { zChartEventFilter, zRange } from './index';
+import { zChartEventFilter, zRange } from './chart-primitives';
 
 /**
  * Shared contract for the AppMetrica-style Event Analytics tree
@@ -8,11 +8,22 @@ import { zChartEventFilter, zRange } from './index';
  * See docs/superpowers/specs/2026-09-15-event-analytics-tree-design.md §4.
  */
 
-/** How deep below the event a node may sit (key, value, key, value). */
+/**
+ * How deep below the event a node may sit. Levels are counted from the event:
+ * property key (1) -> value (2) -> nested key (3) -> value of that key (4).
+ */
 export const EVENT_ANALYTICS_MAX_DEPTH = 4;
 
-/** Each parentPath entry narrows two levels (a key and its value). */
-export const EVENT_ANALYTICS_MAX_PARENT_PATH = EVENT_ANALYTICS_MAX_DEPTH / 2;
+/**
+ * How many `key = value` pairs a request may carry.
+ *
+ * The node being queried occupies a level of its own, so the pairs only cover
+ * its ancestors: `eventPropertyKeys` with no pairs returns level 1 keys and
+ * with one pair returns level 3 keys, while `eventPropertyValues` with one
+ * pair returns level 4 values -- the deepest node the tree allows. A second
+ * pair would ask for level 5 keys / level 6 values, past the limit.
+ */
+export const EVENT_ANALYTICS_MAX_PARENT_PATH = 1;
 
 export const zEventAnalyticsSortKey = z.enum(['events', 'users', 'epu']);
 export const zEventAnalyticsSortDir = z.enum(['asc', 'desc']);
