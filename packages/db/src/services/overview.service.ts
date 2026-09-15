@@ -12,6 +12,11 @@ import {
   type IEventAnalyticsSortKey,
   type IEventPropertyKeyRow,
   type IEventPropertyKeysOutput,
+  type IEventPropertyValuesOutput,
+  zEventAnalyticsParentPathItem,
+  zEventAnalyticsPropertyType,
+  zEventAnalyticsSortDir,
+  zEventAnalyticsSortKey,
   zTimeInterval,
 } from '@openpanel/validation';
 import sqlstring from 'sqlstring';
@@ -476,6 +481,94 @@ export function toEventPropertyKeyRows(
     });
 
   return { rows, nextCursor: hasMore ? cursor + limit : null };
+}
+
+// --- Event analytics tree: property values (T3) ---------------------------
+// Distinct values of one property key under one event, with the events/users
+// metrics, paging and the `remaining` counter the tree's "Load more" needs.
+// See docs/superpowers/specs/2026-09-15-event-analytics-tree-design.md §4.
+
+export const zGetEventPropertyValuesInput = z.object({
+  projectId: z.string(),
+  filters: z.array(z.any()),
+  startDate: z.string(),
+  endDate: z.string(),
+  event: z.string(),
+  key: z.string(),
+  type: zEventAnalyticsPropertyType,
+  parentPath: z
+    .array(zEventAnalyticsParentPathItem)
+    .max(EVENT_ANALYTICS_MAX_PARENT_PATH),
+  sort: zEventAnalyticsSortKey,
+  dir: zEventAnalyticsSortDir,
+  cursor: z.number().int().min(0).optional(),
+  limit: z.number().int().min(1),
+});
+
+export type IGetEventPropertyValuesInput = z.infer<
+  typeof zGetEventPropertyValuesInput
+> & {
+  timezone: string;
+};
+
+/** ClickHouse returns the aggregates as strings. */
+type EventPropertyValueQueryRow = {
+  value: string;
+  events: string | number;
+  users: string | number;
+  total_distinct: string | number;
+};
+
+export function buildEventPropertyValuesQuery({
+  event,
+  key,
+  type,
+  parentPath,
+  sort,
+  dir,
+  cursor,
+  limit,
+  ...range
+}: IGetEventPropertyValuesInput) {
+  const valueExpression = `properties[${sqlstring.escape(key)}]`;
+  const baseValues = buildEventAnalyticsBaseQuery(range)
+    .select(['properties', 'profile_id'])
+    .where('name', '=', event)
+    .rawWhere(`mapContains(properties, ${sqlstring.escape(key)})`);
+
+  for (const step of parentPath) {
+    baseValues.rawWhere(
+      `properties[${sqlstring.escape(step.key)}] = ${sqlstring.escape(step.value)}`
+    );
+  }
+
+  const valueTotals = clix(ch, range.timezone)
+    // uniqExact, not uniq: an approximate total would let `remaining` drift
+    // away from the page the cursor actually returns.
+    .select([`uniqExact(${valueExpression}) AS total_distinct`])
+    .from('base_values');
+
+  // `num` keys are stored as strings, so without the cast 10 sorts before 2.
+  // The contract has no `value` sort key, so this stays the tie-breaker.
+  const tieBreaker = type === 'num' ? 'toFloat64OrNull(value)' : 'value';
+
+  return clix(ch, range.timezone)
+    .with('base_values', baseValues)
+    .with('value_totals', valueTotals)
+    .select([
+      `${valueExpression} AS value`,
+      'count() AS events',
+      'uniqExact(profile_id) AS users',
+      'total_distinct',
+    ])
+    .from('base_values')
+    .crossJoin('value_totals')
+    .groupBy(['value', 'total_distinct'])
+    .orderBy(EVENT_ANALYTICS_SORT_COLUMN[sort], dir === 'asc' ? 'ASC' : 'DESC')
+    .orderBy(tieBreaker, 'ASC')
+    // One row past the page tells us whether another page exists.
+    .limit(limit + 1)
+    .offset(cursor ?? 0);
 }
 
 export const zGetTopLinkOutInput = z.object({
@@ -1732,6 +1825,40 @@ export class OverviewService {
     const rows = await buildEventPropertyKeysQuery(input).execute();
 
     return toEventPropertyKeyRows(rows, input);
+  }
+
+  // --- Event analytics tree: property values (T3) -------------------------
+  async getEventPropertyValues(
+    input: IGetEventPropertyValuesInput
+  ): Promise<IEventPropertyValuesOutput> {
+    const cursor = input.cursor ?? 0;
+    const fetched = (await buildEventPropertyValuesQuery(
+      input
+    ).execute()) as EventPropertyValueQueryRow[];
+
+    // The query asks for one row past the page, so an extra row is the only
+    // proof another page exists.
+    const hasMore = fetched.length > input.limit;
+    const page = hasMore ? fetched.slice(0, input.limit) : fetched;
+    const rows = page.map((row) => ({
+      value: row.value,
+      events: Number(row.events),
+      users: Number(row.users),
+    }));
+
+    if (!hasMore) {
+      return { rows, remaining: 0, nextCursor: null };
+    }
+
+    // `remaining` and `nextCursor` are derived from the same flag on purpose:
+    // a remaining count without a cursor would leave "Load more" inert.
+    const totalDistinct = Number(fetched[0]?.total_distinct ?? 0);
+    const consumed = cursor + rows.length;
+    return {
+      rows,
+      remaining: Math.max(1, totalDistinct - consumed),
+      nextCursor: consumed,
+    };
   }
 
   async getTopLinkOut({
