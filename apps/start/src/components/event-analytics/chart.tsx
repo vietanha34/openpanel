@@ -6,13 +6,16 @@ import { useMemo, useState } from 'react';
 import type {
   IChartBreakdown,
   IChartEventItem,
-  IChartEventSegment,
   IChartEventFilter,
+  IChartEventSegment,
+  IChartRange,
   IChartType,
   IInterval,
   IReportInput,
-  IRange,
 } from '@openpanel/validation';
+
+/** An event series — the only series kind this panel builds. */
+type EventSerie = Extract<IChartEventItem, { type: 'event' }>;
 
 /** One row selected in the tree table. Shared shape with the table (T4). */
 export type EventAnalyticsSelection = {
@@ -44,7 +47,7 @@ const GRANULARITY_LABEL: Record<EventAnalyticsChartGranularity, string> = {
 
 type BuildChartInputArgs = {
   projectId: string;
-  range: IRange;
+  range: IChartRange;
   startDate?: string | null;
   endDate?: string | null;
   filters: IChartEventFilter[];
@@ -74,7 +77,9 @@ export function buildEventAnalyticsChartInput({
   metric,
   granularity,
   chartType,
-}: BuildChartInputArgs): IReportInput {
+}: BuildChartInputArgs): Omit<IReportInput, 'series'> & {
+  series: EventSerie[];
+} {
   const segment = METRIC_SEGMENT[metric];
   const events: string[] = [];
   const keys: string[] = [];
@@ -92,7 +97,7 @@ export function buildEventAnalyticsChartInput({
     }
   }
 
-  const series: IChartEventItem[] = events.map((event) => ({
+  const series: EventSerie[] = events.map((event) => ({
     id: event,
     name: event,
     displayName: event,
@@ -120,7 +125,7 @@ export function buildEventAnalyticsChartInput({
 
 type EventAnalyticsChartProps = {
   projectId: string;
-  range: IRange;
+  range: IChartRange;
   startDate?: string | null;
   endDate?: string | null;
   filters: IChartEventFilter[];
