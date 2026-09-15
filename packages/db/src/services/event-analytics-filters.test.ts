@@ -1,3 +1,4 @@
+import type { IChartEventFilter } from '@openpanel/validation';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ch } from '../clickhouse/client';
@@ -16,7 +17,7 @@ const range = {
   timezone: 'UTC',
 };
 
-const propertyFilter = [
+const propertyFilter: IChartEventFilter[] = [
   {
     id: 'properties.level_mode',
     name: 'properties.level_mode',
@@ -25,12 +26,22 @@ const propertyFilter = [
   },
 ];
 
-const utmFilter = [
+const utmFilter: IChartEventFilter[] = [
   {
     id: 'utm_source',
     name: 'utm_source',
     operator: 'is' as const,
     value: ['newsletter'],
+  },
+];
+
+const cohortFilter: IChartEventFilter[] = [
+  {
+    id: 'cohort',
+    name: 'cohort',
+    operator: 'inCohort' as const,
+    value: [],
+    cohortIds: ['cohort-1'],
   },
 ];
 
@@ -55,15 +66,15 @@ const valuesExtras = {
 // Every event analytics SQL built from the same filter set — the property
 // filter must survive into all of them.
 const builders = {
-  analytics: (filters: typeof propertyFilter) =>
+  analytics: (filters: IChartEventFilter[]) =>
     buildEventAnalyticsQuery({ ...range, filters }).toSQL(),
-  list: (filters: typeof propertyFilter) =>
+  list: (filters: IChartEventFilter[]) =>
     buildEventAnalyticsListQuery({ ...range, ...listExtras, filters }).toSQL(),
-  totals: (filters: typeof propertyFilter) =>
+  totals: (filters: IChartEventFilter[]) =>
     buildEventAnalyticsTotalsQuery({ ...range, filters }).toSQL(),
-  propertyKeys: (filters: typeof propertyFilter) =>
+  propertyKeys: (filters: IChartEventFilter[]) =>
     buildEventPropertyKeysQuery({ ...range, ...keysExtras, filters }).toSQL(),
-  propertyValues: (filters: typeof propertyFilter) =>
+  propertyValues: (filters: IChartEventFilter[]) =>
     buildEventPropertyValuesQuery({
       ...range,
       ...valuesExtras,
@@ -115,9 +126,17 @@ describe.each(Object.entries(builders))('%s property filters', (_name, build) =>
     expect(sql).not.toContain('profile.properties');
   });
 
+  it('resolves a cohort filter through a self-contained subselect', () => {
+    const sql = build(cohortFilter);
+
+    expect(sql).toContain('profile_id IN (SELECT profile_id FROM');
+    expect(sql).toContain("'cohort-1'");
+  });
+
   it('parses in ClickHouse when available', async (ctx) => {
     if (!chReachable) ctx.skip('ClickHouse not reachable at CLICKHOUSE_URL');
     await ch.command({ query: `EXPLAIN ${build(propertyFilter)}` });
     await ch.command({ query: `EXPLAIN ${build(utmFilter)}` });
+    await ch.command({ query: `EXPLAIN ${build(cohortFilter)}` });
   });
 });

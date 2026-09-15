@@ -221,7 +221,10 @@ export function buildEventAnalyticsQuery({
   endDate,
   timezone,
 }: IGetEventAnalyticsInput) {
-  const where = new OverviewService(ch).getRawWhereClause('events', filters);
+  const where = new OverviewService(ch).getEventAnalyticsWhereClause(
+    filters,
+    projectId
+  );
   const baseEvents = clix(ch, timezone)
     .select(['name', 'profile_id'])
     .from(TABLE_NAMES.events, false)
@@ -293,7 +296,9 @@ function buildEventAnalyticsBaseQuery({
       clix.datetime(startDate, 'toDateTime'),
       clix.datetime(endDate, 'toDateTime'),
     ])
-    .rawWhere(new OverviewService(ch).getRawWhereClause('events', filters));
+    .rawWhere(
+      new OverviewService(ch).getEventAnalyticsWhereClause(filters, projectId)
+    );
 }
 
 /** ClickHouse reads `%` and `_` as ILIKE wildcards; a search term is literal. */
@@ -1012,6 +1017,43 @@ export class OverviewService {
       },
       series,
     };
+  }
+
+  /**
+   * Event analytics filters the raw events table, so it must not go through
+   * `getRawWhereClause`: that whitelist accepts 21 fixed columns only and
+   * silently discards `properties.*` filters, leaving the table showing
+   * unfiltered numbers with no error. Here every filter reaches
+   * `getEventFiltersWhereClause`, which already drops names it cannot resolve
+   * on the events table.
+   *
+   * `profile.properties.*` is the one exception: it emits
+   * `profile.properties['key']`, which only resolves in the chart queries that
+   * join the profile CTE. Event analytics has no such join, so those filters
+   * are dropped instead of crashing the query.
+   */
+  getEventAnalyticsWhereClause(
+    filters: IChartEventFilter[],
+    projectId?: string
+  ) {
+    const where = getEventFiltersWhereClause(
+      filters.flatMap((item) => {
+        if (item.name.startsWith('profile.properties.')) {
+          return [];
+        }
+        // The events table has no top-level utm_* columns — those live in the
+        // properties map under the __query.utm_* keys.
+        if (UTM_COLUMNS.includes(item.name)) {
+          return [{ ...item, name: `properties.__query.${item.name}` }];
+        }
+        return [item];
+      }),
+      projectId,
+      undefined,
+      'events'
+    );
+
+    return Object.values(where).join(' AND ');
   }
 
   getRawWhereClause(type: 'events' | 'sessions', filters: IChartEventFilter[]) {
