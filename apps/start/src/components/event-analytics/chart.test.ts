@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { buildEventAnalyticsChartInput } from './chart';
+import { buildEventAnalyticsChartInput } from './chart-input';
 
 const base = {
   projectId: 'proj',
