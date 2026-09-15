@@ -1,12 +1,17 @@
 import { average, sum } from '@openpanel/common';
 import { chartColors } from '@openpanel/constants';
 import {
+  EVENT_ANALYTICS_MAX_DEPTH,
+  EVENT_ANALYTICS_MAX_PARENT_PATH,
   type IChartEventFilter,
   type IEventAnalyticsListInput,
   type IEventAnalyticsListOutput,
   type IEventAnalyticsListRow,
   type IEventAnalyticsMetricRow,
+  type IEventAnalyticsParentPathItem,
   type IEventAnalyticsSortKey,
+  type IEventPropertyKeyRow,
+  type IEventPropertyKeysOutput,
   zTimeInterval,
 } from '@openpanel/validation';
 import sqlstring from 'sqlstring';
@@ -248,6 +253,7 @@ export function buildEventAnalyticsQuery({
     .orderBy('events', 'DESC');
 }
 
+
 type IEventAnalyticsRangeQuery = {
   projectId: string;
   filters: IChartEventFilter[];
@@ -338,6 +344,144 @@ export function buildEventAnalyticsTotalsQuery(
     'count() AS events',
     'uniqExact(profile_id) AS users',
   ]);
+}
+
+/**
+ * Property keys one level below `prefix` for a single event (T2 of the event
+ * analytics tree). See docs/superpowers/specs/2026-09-15-event-analytics-tree-design.md
+ */
+export type IGetEventPropertyKeysInput = {
+  projectId: string;
+  filters: IChartEventFilter[];
+  startDate: string;
+  endDate: string;
+  timezone: string;
+  event: string;
+  /** '' for top level keys, 'payload.' to list the keys inside `payload`. */
+  prefix: string;
+  parentPath: IEventAnalyticsParentPathItem[];
+  cursor?: number;
+  limit: number;
+};
+
+/** Raw ClickHouse shape of one segment below the prefix. */
+type EventPropertyKeySqlRow = {
+  key: string;
+  events: string | number;
+  users: string | number;
+  has_nested: string | number;
+  non_numeric: string | number;
+};
+
+function assertEventPropertyDepth(
+  parentPath: IEventAnalyticsParentPathItem[]
+): void {
+  // A key sits one level below its parent value, so each pair costs two levels.
+  const depth = parentPath.length * 2 + 1;
+  if (
+    parentPath.length > EVENT_ANALYTICS_MAX_PARENT_PATH ||
+    depth > EVENT_ANALYTICS_MAX_DEPTH
+  ) {
+    throw new Error(
+      `Event analytics tree is limited to ${EVENT_ANALYTICS_MAX_DEPTH} levels below the event, requested level ${depth}`
+    );
+  }
+}
+
+export function buildEventPropertyKeysQuery({
+  projectId,
+  filters,
+  startDate,
+  endDate,
+  timezone,
+  event,
+  prefix,
+  parentPath,
+  cursor = 0,
+  limit,
+}: IGetEventPropertyKeysInput) {
+  assertEventPropertyDepth(parentPath);
+
+  const where = new OverviewService(ch).getRawWhereClause('events', filters);
+  const escapedPrefix = sqlstring.escape(prefix);
+
+  const baseEvents = clix(ch, timezone)
+    .select(['profile_id', 'properties'])
+    .from(TABLE_NAMES.events, false)
+    .where('project_id', '=', projectId)
+    .where('created_at', 'BETWEEN', [
+      clix.datetime(startDate, 'toDateTime'),
+      clix.datetime(endDate, 'toDateTime'),
+    ])
+    .where('name', '=', event)
+    .rawWhere(where);
+
+  for (const { key, value } of parentPath) {
+    baseEvents.rawWhere(
+      `properties[${sqlstring.escape(key)}] = ${sqlstring.escape(value)}`
+    );
+  }
+
+  const matchedKeys = clix(ch, timezone)
+    .select([
+      'profile_id',
+      'properties',
+      `arrayFilter(k -> startsWith(k, ${escapedPrefix}), mapKeys(properties)) AS matched`,
+    ])
+    .from('base_events');
+
+  // One row per (event, distinct segment): an event carrying several keys under
+  // the same object still counts once for that object.
+  const segments = clix(ch, timezone)
+    .select([
+      'profile_id',
+      'properties',
+      'matched',
+      `arrayJoin(arrayDistinct(arrayMap(k -> splitByChar('.', substring(k, length(${escapedPrefix}) + 1))[1], matched))) AS segment`,
+    ])
+    .from('matched_keys')
+    .rawWhere('notEmpty(matched)');
+
+  return clix(ch, timezone)
+    .with('base_events', baseEvents)
+    .with('matched_keys', matchedKeys)
+    .with('segments', segments)
+    .select([
+      'segment AS key',
+      'count() AS events',
+      'uniqExact(profile_id) AS users',
+      `max(arrayExists(k -> startsWith(k, concat(${escapedPrefix}, segment, '.')), matched)) AS has_nested`,
+      `countIf(toFloat64OrNull(properties[concat(${escapedPrefix}, segment)]) IS NULL) AS non_numeric`,
+    ])
+    .from('segments')
+    .groupBy(['segment'])
+    .orderBy('events', 'DESC')
+    .orderBy('key', 'ASC')
+    .limit(limit + 1)
+    .offset(cursor);
+}
+
+/** Maps the raw rows onto the shared contract, applying PA1 type inference. */
+export function toEventPropertyKeyRows(
+  sqlRows: EventPropertyKeySqlRow[],
+  { cursor = 0, limit }: { cursor?: number; limit: number }
+): IEventPropertyKeysOutput {
+  const hasMore = sqlRows.length > limit;
+  const rows: IEventPropertyKeyRow[] = sqlRows
+    .slice(0, limit)
+    .map((row): IEventPropertyKeyRow => {
+      const isObject = Number(row.has_nested) > 0;
+      return {
+        key: row.key,
+        events: Number(row.events),
+        users: Number(row.users),
+        kind: isObject ? 'obj' : 'key',
+        // PA1: a leaf key is numeric only when every value parsed as a number.
+        type: isObject ? 'unknown' : Number(row.non_numeric) === 0 ? 'num' : 'str',
+      };
+    });
+
+  return { rows, nextCursor: hasMore ? cursor + limit : null };
 }
 
 export const zGetTopLinkOutInput = z.object({
@@ -1586,6 +1730,16 @@ export class OverviewService {
       events: toFiniteCount(totals?.events),
       users: toFiniteCount(totals?.users),
     };
+  }
+
+  async getEventPropertyKeys(
+    input: IGetEventPropertyKeysInput
+  ): Promise<IEventPropertyKeysOutput> {
+    const rows = await buildEventPropertyKeysQuery(input).execute<
+      Parameters<typeof toEventPropertyKeyRows>[0][number]
+    >();
+
+    return toEventPropertyKeyRows(rows, input);
   }
 
   async getTopLinkOut({

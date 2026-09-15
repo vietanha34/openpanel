@@ -42,7 +42,6 @@ import {
   publicProcedure,
 } from '../trpc';
 import {
-  mockEventPropertyKeys,
   mockEventPropertyValues,
 } from './overview.event-analytics-mock';
 
@@ -540,7 +539,17 @@ export const overviewRouter = createTRPCRouter({
 
   eventPropertyKeys: overviewProcedure
     .input(zEventPropertyKeysInput.extend({ shareId: z.string().optional() }))
-    .query(({ input }) => mockEventPropertyKeys(input)),
+    .use(cacher)
+    .query(async ({ input }) => {
+      const { timezone } = await getSettingsForProject(input.projectId);
+      const { current } = await getCurrentAndPrevious(
+        { ...input, timezone },
+        false,
+        timezone
+      )(overviewService.getEventPropertyKeys.bind(overviewService));
+
+      return current;
+    }),
 
   eventPropertyValues: overviewProcedure
     .input(zEventPropertyValuesInput.extend({ shareId: z.string().optional() }))
