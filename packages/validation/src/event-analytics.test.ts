@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import {
   zEventAnalyticsListInput,
@@ -58,21 +59,20 @@ describe('zEventPropertyKeysInput', () => {
     expect(parsed.limit).toBe(20);
   });
 
-  it('accepts a parentPath reaching the 4 level depth limit', () => {
+  // Levels below the event: key(1) -> value(2) -> nested key(3) -> value(4).
+  // The node being queried occupies a level too, so one parentPath pair is the
+  // deepest legal request: it returns keys at level 3 (and values at level 4).
+  it('accepts a single parentPath pair, the deepest legal drill-down', () => {
     const parsed = zEventPropertyKeysInput.parse({
       ...range,
       event: 'level_start',
       prefix: '',
-      // key -> value -> key -> value == the deepest legal drill-down
-      parentPath: [
-        { key: 'a', value: '1' },
-        { key: 'b', value: '2' },
-      ],
+      parentPath: [{ key: 'level_mode', value: 'hard' }],
     });
-    expect(parsed.parentPath).toHaveLength(2);
+    expect(parsed.parentPath).toHaveLength(1);
   });
 
-  it('rejects a parentPath deeper than 4 levels', () => {
+  it('rejects two parentPath pairs, which would ask for level 5 keys', () => {
     expect(() =>
       zEventPropertyKeysInput.parse({
         ...range,
@@ -81,7 +81,6 @@ describe('zEventPropertyKeysInput', () => {
         parentPath: [
           { key: 'a', value: '1' },
           { key: 'b', value: '2' },
-          { key: 'c', value: '3' },
         ],
       })
     ).toThrow();
@@ -120,5 +119,17 @@ describe('zEventPropertyValuesInput', () => {
         dir: 'desc',
       })
     ).toThrow();
+  });
+});
+
+describe('module graph', () => {
+  it('does not import from the package barrel, which re-exports it', () => {
+    const source = readFileSync(
+      new URL('./event-analytics.ts', import.meta.url),
+      'utf8'
+    );
+    // index.ts does `export * from './event-analytics'`, so importing back from
+    // './index' here would close a runtime import cycle.
+    expect(source).not.toMatch(/from\s+'\.\/index'/);
   });
 });
