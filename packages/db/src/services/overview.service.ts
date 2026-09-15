@@ -446,7 +446,7 @@ export function buildEventPropertyKeysQuery({
     .with('base_events', baseEvents)
     .with('matched_keys', matchedKeys)
     .with('segments', segments)
-    .select([
+    .select<EventPropertyKeySqlRow>([
       'segment AS key',
       'count() AS events',
       'uniqExact(profile_id) AS users',
@@ -1735,9 +1735,7 @@ export class OverviewService {
   async getEventPropertyKeys(
     input: IGetEventPropertyKeysInput
   ): Promise<IEventPropertyKeysOutput> {
-    const rows = (await buildEventPropertyKeysQuery(
-      input
-    ).execute()) as EventPropertyKeySqlRow[];
+    const rows = await buildEventPropertyKeysQuery(input).execute();
 
     return toEventPropertyKeyRows(rows, input);
   }

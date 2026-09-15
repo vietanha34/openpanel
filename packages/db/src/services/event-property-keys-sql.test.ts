@@ -198,7 +198,7 @@ describe('getEventPropertyKeys against ClickHouse', () => {
     await ch.command({
       query: `ALTER TABLE events DELETE WHERE project_id = ${sqlstring.escape(projectId)}`,
       // Wait for the mutation so a rerun never sees the previous fixture.
-      clickhouse_settings: { mutations_sync: 2 },
+      clickhouse_settings: { mutations_sync: '2' },
     });
   });
 
