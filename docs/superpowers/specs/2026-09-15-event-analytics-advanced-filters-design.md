@@ -3,7 +3,9 @@
 Date: 2026-09-15
 Branch: `feature/event-analytics`
 Task: T7 of `docs/superpowers/specs/2026-09-15-event-analytics-tree-design.md` §5.
-Design source: Claude Design project `233791a0-310f-443c-8118-b345c9f77b7d`, file `EventAnalyticsScreen.dc.html` (824 lines), panel "Advanced filters" (`filtersOpen` prop, `filterGroups` view model).
+Design source: Claude Design project `233791a0-310f-443c-8118-b345c9f77b7d`:
+- `Event Analytics.dc.html` — canvas index. Artboard `1c` "Advanced filter popover open": *"Property · operator · value rows, AND/OR groups, nesting capped at two levels"*, rendered as `<dc-import name="EventAnalyticsScreen" filters-open="{{ yes }}">`. Also the `FilterControl` and `Toolbar · below 1200px` component cards.
+- `EventAnalyticsScreen.dc.html` (root, 56119 bytes) — the component itself: `filtersOpen` prop, `filterGroups` view model. Not `uploads/Event Analytics Report/*`, which is an older copy.
 
 > Spec only. No implementation until the spec is approved.
 
@@ -198,6 +200,10 @@ The group's operator is therefore surfaced twice — as the per-row join word an
 
 **Operator labels.** The design shows `is one of`, `is not`, `equals`, `≥`. The repo's `operators` / `operatorsShort` already cover these (`is`, `isNot`, `gte`); rendering `is` as `equals` for a single value and `is one of` for several is a label-only refinement of the existing select, not a new operator. The two new operators from §3 (`hasProperty`, `missingProperty`) do not appear in the mockup's sample rows; they go at the bottom of the operator select and hide the value field when chosen.
 
+**Focus and accessibility.** The canvas's `FilterControl` card fixes the focus treatment for every control in this panel: a 2px ring offset from the control (`outline: 2px solid #2266ec; outline-offset: 1px`), never a colour change on its own. The `AND` / `OR` toggles, the join words, the operator select and both footer buttons are keyboard-reachable and carry that ring.
+
+**Below 1200px.** The canvas's `Toolbar · below 1200px` card puts the quick dimension chips (Platform, Version, Country, Event) *inside this same popover*: the toolbar collapses to one button labelled `All filters` whose badge counts every filter, dimension chips included (the card shows `6`). Search moves below the toolbar, full width. So the panel is not purely the advanced-filter editor at narrow widths — it also hosts the dimension selects, above the `Advanced filters` header. The dimension chips remain ordinary top-level AND conditions in the same root group; folding them in is a layout change, not a model change.
+
 **Component reuse.** `apps/start/src/components/filters/FiltersBuilder.tsx` gains a group-aware mode; its current flat props stay the default so the five existing call sites do not change:
 
 ```ts
@@ -273,6 +279,9 @@ Alternative: make chip removal staged too. Rejected — the chips sit outside th
 **A13 — The join word in the row gutter is the group-operator control.**
 The design shows the join word (`AND` / `OR`) per row and describes the operator in the hint sentence, but shows no per-group toggle. Alternative: add a toggle to each group header mirroring the root's. Rejected — it adds chrome the design does not have; making the existing word clickable does not.
 
+**A14 — Dimension chips fold into the same popover below 1200px, as plain root-level AND conditions.**
+The design card mandates the folding but not the data model behind it. Alternative: keep dimension filters in a separate state and render them in the popover as a distinct section that never mixes with the group tree. Rejected — they are `is` conditions on `country` / `app_version` / event name, exactly what the root group already holds, and a second model would need its own AND/OR story.
+
 ## 10. Questions for the user
 
 1. **A3** — is the lossy flat mirror acceptable, or should a saved report that uses OR/sub-groups be unreadable by old clients instead of under-filtered?
@@ -281,4 +290,5 @@ The design shows the join word (`AND` / `OR`) per row and describes the operator
 4. **A10** — is the scope badge purely informational, or should a group be restricted to a single property scope (all user properties or all event properties)? The design's sample has one of each but never shows a mixed group.
 5. Scope check: this spec converts every `getEventFiltersWhereClause` / `buildFilterWhere` call site to the group API. Should the first implementation instead limit itself to the Event Analytics surfaces and convert the rest later?
 6. **A13** — is a clickable join word discoverable enough as the group-operator control, or should each group header get its own `AND` / `OR` toggle like the root?
-7. **A11** — should `Clear` in the panel footer clear the staged group only, or also clear the applied filters immediately (like `Clear all` on the chip row does)?
+7. **A14** — below 1200px, should the folded-in dimension chips be editable as ordinary conditions (operator select and all), or stay locked to `is` selects the way the wide toolbar renders them?
+8. **A11** — should `Clear` in the panel footer clear the staged group only, or also clear the applied filters immediately (like `Clear all` on the chip row does)?
