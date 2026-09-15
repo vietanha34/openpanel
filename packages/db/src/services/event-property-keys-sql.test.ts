@@ -2,9 +2,8 @@ import {
   EVENT_ANALYTICS_MAX_DEPTH,
   EVENT_ANALYTICS_MAX_PARENT_PATH,
 } from '@openpanel/validation';
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-
 import sqlstring from 'sqlstring';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { ch } from '../clickhouse/client';
 import {
@@ -198,6 +197,8 @@ describe('getEventPropertyKeys against ClickHouse', () => {
     if (!chReachable) return;
     await ch.command({
       query: `ALTER TABLE events DELETE WHERE project_id = ${sqlstring.escape(projectId)}`,
+      // Wait for the mutation so a rerun never sees the previous fixture.
+      clickhouse_settings: { mutations_sync: 2 },
     });
   });
 
