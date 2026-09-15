@@ -271,7 +271,7 @@ describe('chart.service / getChartSql', () => {
     await explain(sql);
   });
 
-  itCH('untyped gte filter keeps legacy toFloat64 casting', async () => {
+  itCH('untyped gte filter casts with toFloat64OrNull', async () => {
     const sql = await getChartSql({
       event: event({
         filters: [
@@ -285,7 +285,7 @@ describe('chart.service / getChartSql', () => {
       projectId: PROJECT_ID,
       timezone: 'UTC',
     });
-    expect(sql).toContain('toFloat64OrZero');
+    expect(sql).toContain('toFloat64OrNull');
     await explain(sql);
   });
 
