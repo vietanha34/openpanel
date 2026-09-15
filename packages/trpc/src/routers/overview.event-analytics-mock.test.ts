@@ -224,7 +224,7 @@ describe('mockEventPropertyValues', () => {
     expect(nextCursor).toBe(5);
   });
 
-  it('stops paging when the sample values run out', () => {
+  it('keeps paging while values remain', () => {
     const { rows, remaining, nextCursor } = mockEventPropertyValues({
       ...range,
       event: 'level_start',
@@ -236,8 +236,31 @@ describe('mockEventPropertyValues', () => {
       cursor: 5,
       limit: 5,
     });
-    expect(rows).toHaveLength(5);
+    expect(rows.map((row) => row.value)).toEqual([
+      '2685',
+      '2686',
+      '2687',
+      '2688',
+      '2689',
+    ]);
     expect(remaining).toBe(1244);
+    expect(nextCursor).toBe(10);
+  });
+
+  it('stops paging only once the last value is served', () => {
+    const { rows, remaining, nextCursor } = mockEventPropertyValues({
+      ...range,
+      event: 'level_start',
+      key: 'level_id',
+      type: 'num',
+      parentPath: [],
+      sort: 'events',
+      dir: 'desc',
+      cursor: 1250,
+      limit: 5,
+    });
+    expect(rows).toHaveLength(4);
+    expect(remaining).toBe(0);
     expect(nextCursor).toBeNull();
   });
 

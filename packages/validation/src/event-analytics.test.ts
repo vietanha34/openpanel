@@ -58,6 +58,20 @@ describe('zEventPropertyKeysInput', () => {
     expect(parsed.limit).toBe(20);
   });
 
+  it('accepts a parentPath reaching the 4 level depth limit', () => {
+    const parsed = zEventPropertyKeysInput.parse({
+      ...range,
+      event: 'level_start',
+      prefix: '',
+      // key -> value -> key -> value == the deepest legal drill-down
+      parentPath: [
+        { key: 'a', value: '1' },
+        { key: 'b', value: '2' },
+      ],
+    });
+    expect(parsed.parentPath).toHaveLength(2);
+  });
+
   it('rejects a parentPath deeper than 4 levels', () => {
     expect(() =>
       zEventPropertyKeysInput.parse({
@@ -68,11 +82,15 @@ describe('zEventPropertyKeysInput', () => {
           { key: 'a', value: '1' },
           { key: 'b', value: '2' },
           { key: 'c', value: '3' },
-          { key: 'd', value: '4' },
-          { key: 'e', value: '5' },
         ],
       })
     ).toThrow();
+  });
+
+  it('rejects a non-positive limit and a negative cursor', () => {
+    const base = { ...range, event: 'level_start', prefix: '', parentPath: [] };
+    expect(() => zEventPropertyKeysInput.parse({ ...base, limit: 0 })).toThrow();
+    expect(() => zEventPropertyKeysInput.parse({ ...base, cursor: -1 })).toThrow();
   });
 });
 

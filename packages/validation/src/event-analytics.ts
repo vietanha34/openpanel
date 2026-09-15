@@ -8,8 +8,11 @@ import { zChartEventFilter, zRange } from './index';
  * See docs/superpowers/specs/2026-09-15-event-analytics-tree-design.md §4.
  */
 
-/** How deep below the event a node may sit. */
+/** How deep below the event a node may sit (key, value, key, value). */
 export const EVENT_ANALYTICS_MAX_DEPTH = 4;
+
+/** Each parentPath entry narrows two levels (a key and its value). */
+export const EVENT_ANALYTICS_MAX_PARENT_PATH = EVENT_ANALYTICS_MAX_DEPTH / 2;
 
 export const zEventAnalyticsSortKey = z.enum(['events', 'users', 'epu']);
 export const zEventAnalyticsSortDir = z.enum(['asc', 'desc']);
@@ -24,7 +27,7 @@ export const zEventAnalyticsParentPathItem = z.object({
 
 const zEventAnalyticsParentPath = z
   .array(zEventAnalyticsParentPathItem)
-  .max(EVENT_ANALYTICS_MAX_DEPTH);
+  .max(EVENT_ANALYTICS_MAX_PARENT_PATH);
 
 /** Date range + filters every event analytics endpoint takes. */
 export const zEventAnalyticsRange = z.object({
@@ -39,8 +42,8 @@ export const zEventAnalyticsListInput = zEventAnalyticsRange.extend({
   search: z.string().optional(),
   sort: zEventAnalyticsSortKey,
   dir: zEventAnalyticsSortDir,
-  cursor: z.number().optional(),
-  limit: z.number().default(10),
+  cursor: z.number().int().min(0).optional(),
+  limit: z.number().int().min(1).default(10),
 });
 
 export const zEventAnalyticsTotalsInput = zEventAnalyticsRange;
@@ -49,8 +52,8 @@ export const zEventPropertyKeysInput = zEventAnalyticsRange.extend({
   event: z.string(),
   prefix: z.string(),
   parentPath: zEventAnalyticsParentPath,
-  cursor: z.number().optional(),
-  limit: z.number().default(20),
+  cursor: z.number().int().min(0).optional(),
+  limit: z.number().int().min(1).default(20),
 });
 
 export const zEventPropertyValuesInput = zEventAnalyticsRange.extend({
@@ -60,8 +63,8 @@ export const zEventPropertyValuesInput = zEventAnalyticsRange.extend({
   parentPath: zEventAnalyticsParentPath,
   sort: zEventAnalyticsSortKey,
   dir: zEventAnalyticsSortDir,
-  cursor: z.number().optional(),
-  limit: z.number().default(5),
+  cursor: z.number().int().min(0).optional(),
+  limit: z.number().int().min(1).default(5),
 });
 
 export type IEventAnalyticsSortKey = z.infer<typeof zEventAnalyticsSortKey>;

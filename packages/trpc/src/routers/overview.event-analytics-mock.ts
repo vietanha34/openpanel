@@ -35,14 +35,43 @@ type MockKey = Metric & {
   path: string;
   type: Exclude<IEventAnalyticsPropertyType, 'unknown'>;
   values?: MockValue[];
-  /** Distinct values beyond the ones sampled here. */
-  remaining?: number;
 };
 
 type MockEvent = Metric & {
   name: string;
   keys: MockKey[];
 };
+
+/** The ten `level_id` values drawn in the design sample. */
+const SAMPLED_LEVEL_IDS: MockValue[] = [
+          { value: '2680', events: 38420, users: 9130 },
+          { value: '2681', events: 35110, users: 8740 },
+          { value: '2682', events: 31980, users: 8402 },
+          { value: '2683', events: 29455, users: 8117 },
+          { value: '2684', events: 27310, users: 7866 },
+          { value: '2685', events: 25904, users: 7602 },
+          { value: '2686', events: 24188, users: 7311 },
+          { value: '2687', events: 22740, users: 7065 },
+          { value: '2688', events: 21403, users: 6822 },
+          { value: '2689', events: 20190, users: 6588 },
+];
+
+const LAST_SAMPLED_LEVEL_ID = SAMPLED_LEVEL_IDS[
+  SAMPLED_LEVEL_IDS.length - 1
+] as MockValue;
+
+/**
+ * `level_id` is the design's long, paged list (10 shown, 1244 more). Continuing
+ * it with a deterministic decay keeps `remaining` and `nextCursor` consistent,
+ * so the "Load more" affordance is actually exercisable against the stub.
+ */
+function syntheticLevelIds(last: MockValue, count: number): MockValue[] {
+  return Array.from({ length: count }, (_, index) => ({
+    value: String(Number(last.value) + index + 1),
+    events: last.events - (index + 1) * 16,
+    users: last.users - (index + 1) * 5,
+  }));
+}
 
 const TREE: MockEvent[] = [
   {
@@ -55,18 +84,9 @@ const TREE: MockEvent[] = [
         type: 'num',
         events: 842910,
         users: 24180,
-        remaining: 1244,
         values: [
-          { value: '2680', events: 38420, users: 9130 },
-          { value: '2681', events: 35110, users: 8740 },
-          { value: '2682', events: 31980, users: 8402 },
-          { value: '2683', events: 29455, users: 8117 },
-          { value: '2684', events: 27310, users: 7866 },
-          { value: '2685', events: 25904, users: 7602 },
-          { value: '2686', events: 24188, users: 7311 },
-          { value: '2687', events: 22740, users: 7065 },
-          { value: '2688', events: 21403, users: 6822 },
-          { value: '2689', events: 20190, users: 6588 },
+          ...SAMPLED_LEVEL_IDS,
+          ...syntheticLevelIds(LAST_SAMPLED_LEVEL_ID, 1244),
         ],
       },
       {
@@ -384,7 +404,6 @@ export function mockEventPropertyValues(
 
   const sorted = sortRows(key.values, input.sort, input.dir);
   const { slice, nextCursor } = page(sorted, input.cursor, input.limit);
-  const totalDistinct = key.values.length + (key.remaining ?? 0);
   const seen = (input.cursor ?? 0) + slice.length;
 
   return {
@@ -393,7 +412,7 @@ export function mockEventPropertyValues(
       events: value.events,
       users: value.users,
     })),
-    remaining: Math.max(0, totalDistinct - seen),
+    remaining: Math.max(0, key.values.length - seen),
     nextCursor,
   };
 }
