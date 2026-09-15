@@ -41,10 +41,6 @@ import {
   protectedProcedure,
   publicProcedure,
 } from '../trpc';
-import {
-  mockEventPropertyValues,
-} from './overview.event-analytics-mock';
-
 const cacher = cacheMiddleware((input, opts) => {
   const range = input.range as IChartRange;
   if (opts.path === 'overview.liveData') {
@@ -506,8 +502,8 @@ export const overviewRouter = createTRPCRouter({
     }),
 
   // Event analytics tree (event -> property key -> value -> nested key).
-  // Wave 0 stubs: deterministic mock data so the dashboard can be built
-  // against the final contract before the ClickHouse queries land.
+  // Every level is now served from ClickHouse; the Wave 0 mocks are only kept
+  // for their own tests.
   // See docs/superpowers/specs/2026-09-15-event-analytics-tree-design.md
   eventAnalyticsList: overviewProcedure
     .input(zEventAnalyticsListInput.extend({ shareId: z.string().optional() }))
@@ -553,7 +549,17 @@ export const overviewRouter = createTRPCRouter({
 
   eventPropertyValues: overviewProcedure
     .input(zEventPropertyValuesInput.extend({ shareId: z.string().optional() }))
-    .query(({ input }) => mockEventPropertyValues(input)),
+    .use(cacher)
+    .query(async ({ input }) => {
+      const { timezone } = await getSettingsForProject(input.projectId);
+      const { current } = await getCurrentAndPrevious(
+        { ...input, timezone },
+        false,
+        timezone
+      )(overviewService.getEventPropertyValues.bind(overviewService));
+
+      return current;
+    }),
 
   topConversions: overviewProcedure
     .input(
