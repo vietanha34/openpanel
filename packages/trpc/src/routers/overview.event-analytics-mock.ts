@@ -371,7 +371,7 @@ export function mockEventPropertyKeys(
 export function mockEventPropertyValues(
   input: Pick<
     IEventPropertyValuesInput,
-    'event' | 'key' | 'parentPath' | 'sort' | 'dir' | 'cursor' | 'limit'
+    'event' | 'key' | 'type' | 'parentPath' | 'sort' | 'dir' | 'cursor' | 'limit'
   >
 ): IEventPropertyValuesOutput {
   const event = TREE.find((candidate) => candidate.name === input.event);

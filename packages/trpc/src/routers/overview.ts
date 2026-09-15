@@ -24,6 +24,10 @@ import {
 import {
   type IChartRange,
   pageContextSchema,
+  zEventAnalyticsListInput,
+  zEventAnalyticsTotalsInput,
+  zEventPropertyKeysInput,
+  zEventPropertyValuesInput,
   zRange,
 } from '@openpanel/validation';
 import { format } from 'date-fns';
@@ -37,6 +41,12 @@ import {
   protectedProcedure,
   publicProcedure,
 } from '../trpc';
+import {
+  mockEventAnalyticsList,
+  mockEventAnalyticsTotals,
+  mockEventPropertyKeys,
+  mockEventPropertyValues,
+} from './overview.event-analytics-mock';
 
 const cacher = cacheMiddleware((input, opts) => {
   const range = input.range as IChartRange;
@@ -497,6 +507,26 @@ export const overviewRouter = createTRPCRouter({
 
       return current;
     }),
+
+  // Event analytics tree (event -> property key -> value -> nested key).
+  // Wave 0 stubs: deterministic mock data so the dashboard can be built
+  // against the final contract before the ClickHouse queries land.
+  // See docs/superpowers/specs/2026-09-15-event-analytics-tree-design.md
+  eventAnalyticsList: overviewProcedure
+    .input(zEventAnalyticsListInput.extend({ shareId: z.string().optional() }))
+    .query(({ input }) => mockEventAnalyticsList(input)),
+
+  eventAnalyticsTotals: overviewProcedure
+    .input(zEventAnalyticsTotalsInput.extend({ shareId: z.string().optional() }))
+    .query(() => mockEventAnalyticsTotals()),
+
+  eventPropertyKeys: overviewProcedure
+    .input(zEventPropertyKeysInput.extend({ shareId: z.string().optional() }))
+    .query(({ input }) => mockEventPropertyKeys(input)),
+
+  eventPropertyValues: overviewProcedure
+    .input(zEventPropertyValuesInput.extend({ shareId: z.string().optional() }))
+    .query(({ input }) => mockEventPropertyValues(input)),
 
   topConversions: overviewProcedure
     .input(
