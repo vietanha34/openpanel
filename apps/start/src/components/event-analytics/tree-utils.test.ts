@@ -11,6 +11,7 @@ import {
   indentStyle,
   nextSort,
   sortArrow,
+  sortKeyForColumn,
   subPercent,
   valueKindForLevel,
 } from './tree-utils';
@@ -126,6 +127,18 @@ describe('formatCount', () => {
   });
 });
 
+describe('sortKeyForColumn', () => {
+  it('maps the metric columns straight through', () => {
+    expect(sortKeyForColumn('events')).toBe('events');
+    expect(sortKeyForColumn('users')).toBe('users');
+    expect(sortKeyForColumn('epu')).toBe('epu');
+  });
+
+  it('maps "% of all users" to users', () => {
+    expect(sortKeyForColumn('pctu')).toBe('users');
+  });
+});
+
 describe('nextSort', () => {
   it('starts a new column descending', () => {
     expect(nextSort({ sort: 'events', dir: 'desc' }, 'users')).toEqual({
@@ -151,5 +164,10 @@ describe('sortArrow', () => {
     expect(sortArrow({ sort: 'users', dir: 'desc' }, 'users')).toBe('↓');
     expect(sortArrow({ sort: 'users', dir: 'asc' }, 'users')).toBe('↑');
     expect(sortArrow({ sort: 'users', dir: 'asc' }, 'events')).toBe('');
+  });
+
+  it('separates the users column from the percentage column', () => {
+    expect(sortArrow({ sort: 'pctu', dir: 'desc' }, 'users')).toBe('');
+    expect(sortArrow({ sort: 'pctu', dir: 'desc' }, 'pctu')).toBe('↓');
   });
 });

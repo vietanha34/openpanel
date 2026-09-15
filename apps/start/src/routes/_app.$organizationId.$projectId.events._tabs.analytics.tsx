@@ -1,57 +1,48 @@
+import { EventTreeTable } from '@/components/event-analytics/event-tree-table';
+import type { EventAnalyticsRangeInput } from '@/components/event-analytics/tree-nodes';
 import {
   OverviewFilterButton,
   OverviewFiltersButtons,
 } from '@/components/overview/filters/overview-filters-buttons';
-import { useOverviewOptions } from '@/components/overview/useOverviewOptions';
 import { OverviewRange } from '@/components/overview/overview-range';
-import { ReportChartShortcut } from '@/components/report-chart/shortcut';
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table';
+import { useOverviewOptions } from '@/components/overview/useOverviewOptions';
 import { useEventQueryFilters } from '@/hooks/use-event-query-filters';
-import { useTRPC } from '@/integrations/trpc/react';
-import { useQuery } from '@tanstack/react-query';
+import { getChartColor } from '@/utils/theme';
 import { createFileRoute } from '@tanstack/react-router';
-import type { IChartEventItem } from '@openpanel/validation';
+import { useCallback, useMemo, useState } from 'react';
 
 export const Route = createFileRoute(
   '/_app/$organizationId/$projectId/events/_tabs/analytics',
 )({ component: EventAnalytics });
 
-const number = new Intl.NumberFormat();
-const percent = new Intl.NumberFormat(undefined, {
-  style: 'percent',
-  maximumFractionDigits: 1,
-});
-
 function EventAnalytics() {
   const { projectId } = Route.useParams();
   const { range, startDate, endDate } = useOverviewOptions();
   const [filters] = useEventQueryFilters();
-  const trpc = useTRPC();
-  const query = useQuery(
-    trpc.overview.eventAnalytics.queryOptions({
-      projectId,
-      range,
-      startDate,
-      endDate,
-      filters,
-    }),
+
+  const input: EventAnalyticsRangeInput = useMemo(
+    () => ({ projectId, range, startDate, endDate, filters }),
+    [projectId, range, startDate, endDate, filters],
   );
-  const totals = query.data?.[0];
-  const series: IChartEventItem[] = (query.data ?? []).slice(0, 5).map((item) => ({
-    id: item.name,
-    name: item.name,
-    displayName: item.name,
-    segment: 'event',
-    filters,
-    type: 'event',
-  }));
+
+  // Lifted here because the chart panel (T5) plots exactly these paths.
+  const [selected, setSelected] = useState<{ path: string; color: string }[]>(
+    [],
+  );
+  const toggle = useCallback((path: string) => {
+    setSelected((current) => {
+      const without = current.filter((item) => item.path !== path);
+      if (without.length !== current.length) {
+        // Re-colour so the swatches stay dense after a removal.
+        return without.map((item, index) => ({
+          path: item.path,
+          color: getChartColor(index),
+        }));
+      }
+      return [...current, { path, color: getChartColor(current.length) }];
+    });
+  }, []);
+  const selection = useMemo(() => ({ selected, toggle }), [selected, toggle]);
 
   return (
     <div className="col gap-4">
@@ -60,43 +51,7 @@ function EventAnalytics() {
         <OverviewFilterButton enableEventsFilter />
         <OverviewFiltersButtons className="p-0" />
       </div>
-      {series.length > 0 && (
-        <ReportChartShortcut projectId={projectId} range={range} chartType="line" series={series} />
-      )}
-      <Table>
-        <TableHeader>
-          <TableRow>
-            <TableHead>Event</TableHead>
-            <TableHead className="text-right">Events</TableHead>
-            <TableHead className="text-right">Users</TableHead>
-            <TableHead className="text-right">Events/User</TableHead>
-            <TableHead className="text-right">% Users</TableHead>
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {totals && (
-            <TableRow className="bg-muted/40 font-medium">
-              <TableCell>Totals and averages</TableCell>
-              <TableCell className="text-right">{number.format(totals.total_events)}</TableCell>
-              <TableCell className="text-right">{number.format(totals.total_users)}</TableCell>
-              <TableCell className="text-right">{(totals.total_events / totals.total_users).toFixed(2)}</TableCell>
-              <TableCell className="text-right">100%</TableCell>
-            </TableRow>
-          )}
-          {query.data?.map((item) => (
-            <TableRow key={item.name}>
-              <TableCell className="font-medium">{item.name}</TableCell>
-              <TableCell className="text-right"><div>{number.format(item.events)}</div><div className="text-xs text-muted-foreground">{percent.format(item.event_percentage)}</div></TableCell>
-              <TableCell className="text-right"><div>{number.format(item.users)}</div><div className="text-xs text-muted-foreground">{percent.format(item.user_percentage)}</div></TableCell>
-              <TableCell className="text-right">{item.events_per_user.toFixed(2)}</TableCell>
-              <TableCell className="text-right">{percent.format(item.user_percentage)}</TableCell>
-            </TableRow>
-          ))}
-          {!query.isLoading && query.data?.length === 0 && (
-            <TableRow><TableCell colSpan={5} className="text-center text-muted-foreground">No events for this range</TableCell></TableRow>
-          )}
-        </TableBody>
-      </Table>
+      <EventTreeTable input={input} selection={selection} />
     </div>
   );
 }

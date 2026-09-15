@@ -88,10 +88,22 @@ export function subPercent(part: number, total: number, showPct: boolean) {
   return showPct ? formatPercent(part, total) : null;
 }
 
+/**
+ * Header columns. `pctu` is `% of all users`, which the contract has no sort key
+ * for: the share is `users / totals.users` and `totals.users` is constant within
+ * one query, so ordering by it is identical to ordering by `users`. It stays a
+ * separate column id purely so only one header shows the sort arrow.
+ */
+export type SortColumn = IEventAnalyticsSortKey | 'pctu';
+
+export function sortKeyForColumn(column: SortColumn): IEventAnalyticsSortKey {
+  return column === 'pctu' ? 'users' : column;
+}
+
 export function nextSort(
-  current: { sort: IEventAnalyticsSortKey; dir: IEventAnalyticsSortDir },
-  clicked: IEventAnalyticsSortKey,
-): { sort: IEventAnalyticsSortKey; dir: IEventAnalyticsSortDir } {
+  current: { sort: SortColumn; dir: IEventAnalyticsSortDir },
+  clicked: SortColumn,
+): { sort: SortColumn; dir: IEventAnalyticsSortDir } {
   if (current.sort !== clicked) {
     return { sort: clicked, dir: 'desc' };
   }
@@ -99,8 +111,8 @@ export function nextSort(
 }
 
 export function sortArrow(
-  current: { sort: IEventAnalyticsSortKey; dir: IEventAnalyticsSortDir },
-  column: IEventAnalyticsSortKey,
+  current: { sort: SortColumn; dir: IEventAnalyticsSortDir },
+  column: SortColumn,
 ): '↓' | '↑' | '' {
   if (current.sort !== column) {
     return '';
