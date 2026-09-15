@@ -389,32 +389,22 @@ function assertEventPropertyDepth(
 }
 
 export function buildEventPropertyKeysQuery({
-  projectId,
-  filters,
-  startDate,
-  endDate,
-  timezone,
   event,
   prefix,
   parentPath,
   cursor = 0,
   limit,
+  ...range
 }: IGetEventPropertyKeysInput) {
   assertEventPropertyDepth(parentPath);
 
-  const where = new OverviewService(ch).getRawWhereClause('events', filters);
+  const { timezone } = range;
   const escapedPrefix = sqlstring.escape(prefix);
 
-  const baseEvents = clix(ch, timezone)
+  // Same filtered slice as the list and the totals, narrowed to one event.
+  const baseEvents = buildEventAnalyticsBaseQuery(range)
     .select(['profile_id', 'properties'])
-    .from(TABLE_NAMES.events, false)
-    .where('project_id', '=', projectId)
-    .where('created_at', 'BETWEEN', [
-      clix.datetime(startDate, 'toDateTime'),
-      clix.datetime(endDate, 'toDateTime'),
-    ])
-    .where('name', '=', event)
-    .rawWhere(where);
+    .where('name', '=', event);
 
   for (const { key, value } of parentPath) {
     baseEvents.rawWhere(
