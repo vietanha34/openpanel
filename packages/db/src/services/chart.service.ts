@@ -1234,10 +1234,10 @@ function getPropertyMapAccess(
 function buildNumericComparison(
   whereFrom: string,
   sqlOperator: '>' | '<' | '>=' | '<=',
-  value: (string | number)[],
+  value: (string | number | boolean | null)[],
   isWildcard: boolean,
 ): string {
-  const compare = (operand: string, val: string | number) =>
+  const compare = (operand: string, val: string | number | boolean | null) =>
     `toFloat64OrNull(${operand}) ${sqlOperator} toFloat64(${sqlstring.escape(String(val).trim())})`;
 
   if (isWildcard) {
