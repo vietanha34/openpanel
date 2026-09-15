@@ -285,6 +285,13 @@ function buildEventAnalyticsBaseQuery({
     .rawWhere(new OverviewService(ch).getRawWhereClause('events', filters));
 }
 
+/** ClickHouse reads `%` and `_` as ILIKE wildcards; a search term is literal. */
+const LIKE_WILDCARD_RE = /[\\%_]/g;
+
+function escapeLikeTerm(term: string) {
+  return term.replace(LIKE_WILDCARD_RE, '\\$&');
+}
+
 const EVENT_ANALYTICS_SORT_COLUMN: Record<IEventAnalyticsSortKey, string> = {
   events: 'events',
   users: 'users',
@@ -316,7 +323,9 @@ export function buildEventAnalyticsListQuery({
     .offset(cursor ?? 0);
 
   if (search) {
-    query.rawWhere(`name ILIKE ${sqlstring.escape(`%${search}%`)}`);
+    query.rawWhere(
+      `name ILIKE ${sqlstring.escape(`%${escapeLikeTerm(search)}%`)}`
+    );
   }
 
   return query;

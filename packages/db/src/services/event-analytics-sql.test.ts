@@ -1,4 +1,4 @@
-import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ch } from '../clickhouse/client';
 import { Query } from '../clickhouse/query-builder';
@@ -19,8 +19,11 @@ const input = {
 
 let chReachable = false;
 
-beforeAll(async () => {
+beforeEach(() => {
   vi.spyOn(console, 'log').mockImplementation(() => {});
+});
+
+beforeAll(async () => {
   try {
     await ch.command({ query: 'SELECT 1' });
     chReachable = true;
@@ -106,10 +109,19 @@ describe('buildEventAnalyticsListQuery', () => {
   it('matches the search term case-insensitively against the event name', () => {
     const sql = buildEventAnalyticsListQuery({
       ...listInput,
-      search: "sign_up'",
+      search: "sign'up",
     }).toSQL();
 
-    expect(sql).toContain("name ILIKE '%sign_up\\'%'");
+    expect(sql).toContain(String.raw`name ILIKE '%sign\'up%'`);
+  });
+
+  it('treats ILIKE wildcards inside the search term as literal characters', () => {
+    const sql = buildEventAnalyticsListQuery({
+      ...listInput,
+      search: 'sign_up%',
+    }).toSQL();
+
+    expect(sql).toContain(String.raw`name ILIKE '%sign\\_up\\%%'`);
   });
 
   it('leaves the name unfiltered when no search term is given', () => {
@@ -136,13 +148,26 @@ describe('buildEventAnalyticsTotalsQuery', () => {
   });
 
   it('reads the same filtered range as the list query', () => {
-    const totals = buildEventAnalyticsTotalsQuery(input).toSQL();
-    const list = buildEventAnalyticsListQuery(listInput).toSQL();
-    const whereOf = (sql: string) =>
-      sql.slice(sql.indexOf('WHERE'), sql.indexOf('GROUP BY') + 1 || undefined);
+    const filtered = {
+      ...input,
+      filters: [
+        { id: 'country', name: 'country', operator: 'is' as const, value: ['SE'] },
+      ],
+    };
+    const whereOf = (sql: string) => {
+      const where = sql.slice(sql.indexOf('WHERE'));
+      const end = where.indexOf('GROUP BY');
+      return end === -1 ? where : where.slice(0, end);
+    };
 
-    expect(whereOf(totals)).toContain(`project_id = '${input.projectId}'`);
-    expect(whereOf(list)).toContain(`project_id = '${input.projectId}'`);
+    const totals = whereOf(buildEventAnalyticsTotalsQuery(filtered).toSQL());
+    const list = whereOf(
+      buildEventAnalyticsListQuery({ ...listInput, ...filtered }).toSQL()
+    );
+
+    expect(totals).toContain(`project_id = '${input.projectId}'`);
+    expect(totals).toContain("'SE'");
+    expect(totals.trim()).toBe(list.trim());
   });
 
   it('parses in ClickHouse when available', async (ctx) => {
