@@ -41,6 +41,13 @@ New file `packages/validation/src/filter-group.ts` (a leaf module like `chart-pr
 ```ts
 import { zChartEventFilter } from './chart-primitives';
 
+// Declared FIRST: the schemas below are built at module load and read these
+// values eagerly inside `.max(...)`. Declaring them after the schemas would
+// read a `const` still in its temporal dead zone and throw a ReferenceError
+// the moment the module is imported.
+export const FILTER_GROUP_MAX_CHILDREN = 20;
+export const FILTER_GROUP_MAX_DEPTH = 2; // documentation constant; the depth limit is structural
+
 export const zFilterCondition = z.object({
   kind: z.literal('condition'),
   filter: zChartEventFilter,
@@ -63,9 +70,6 @@ export const zFilterGroup = z.object({
     .array(z.union([zFilterCondition, zFilterSubGroup]))
     .max(FILTER_GROUP_MAX_CHILDREN),
 });
-
-export const FILTER_GROUP_MAX_CHILDREN = 20;
-export const FILTER_GROUP_MAX_DEPTH = 2; // documentation constant; the depth limit is structural
 ```
 
 The two-level limit is enforced by the schema shape, not by a runtime depth counter: `zFilterSubGroup.children` accepts conditions only, so a third level is unrepresentable. No `z.lazy`, no recursion guard, no way for a hand-written API payload to smuggle deeper nesting past validation.
@@ -320,7 +324,7 @@ Event Analytics URL state (`use-event-query-filters.ts`) keeps the existing flat
 - `packages/db`: the §5.4 cross-scope case end to end — an `OR` of `profile.properties.plan is pro` and `properties.level_mode hasProperty` produces SQL whose profile branch is the rewritten scalar alias `` `profile.properties.plan` `` and whose CTE selects that column; assert the string `mapContains(profile.properties` never appears in any generated SQL.
 - `packages/db`: the same group with a wildcard profile reference added sets `needsFullMap`, the CTE keeps `properties as "profile.properties"`, and the `map['key']` branch still resolves.
 - `packages/db`: scope detection over a group — a `profile.*` condition buried in a sub-group still adds the profile join and still registers its key with `collectProfilePropertyKeys` (the PR #7 failure mode).
-- `packages/db`: Phase 1 only — an Event Analytics query with a `properties.*` condition actually filters, where `getRawWhereClause` would have dropped it.
+- `packages/db`: an Event Analytics query with a `properties.*` condition inside an `OR` group filters correctly. (That such a condition reaches the compiler at all is T10's test, not this spec's — see §10.)
 - Existing `filter-where.test.ts` and the chart SQL tests must pass unchanged; that is the proof the §5.1 extraction was behaviour-preserving.
 - Commands: `pnpm vitest run <path>`, `pnpm typecheck`. Never run `pnpm format` (project rule).
 
@@ -380,7 +384,11 @@ Ships: the validation module (§3), `resolveFilterGroup` and the refusal mechani
 
 Converted call sites: the Event Analytics query path alone — `buildEventAnalyticsQuery` and the `eventAnalyticsList` / `eventAnalyticsTotals` / `eventPropertyKeys` / `eventPropertyValues` procedures from T1–T3.
 
-One blocker specific to this path: `buildEventAnalyticsQuery` filters through `OverviewService.getRawWhereClause('events', filters)`, which **silently drops every filter whose name is not in `WHITELISTED_FILTERS`** (`overview.service.ts:34`) — no `properties.*`, no `profile.*`, no cohorts. The design's own sample conditions (`user.install_source`, `level_start.level_id`) are all in the dropped set, so Event Analytics cannot filter on them today at all. Worse, a silent drop inside an `OR` group **widens** the result (§5.2). Phase 1 therefore routes Event Analytics through the group compiler directly (events scope) instead of `getRawWhereClause`, and keeps `getRawWhereClause` for the other overview widgets that still call it. This is a behaviour change for Event Analytics — property filters start working — and needs to be called out in the PR.
+**Dependency: T10 must land first.** `buildEventAnalyticsQuery` currently filters through `OverviewService.getRawWhereClause('events', filters)`, which **silently drops every filter whose name is not in `WHITELISTED_FILTERS`** (`overview.service.ts:34`) — no `properties.*`, no `profile.*`, no cohorts. The design's own sample conditions (`user.install_source`, `level_start.level_id`) are all in the dropped set, so Event Analytics cannot filter on them today at all, and a silent drop inside an `OR` group would **widen** the result (§5.2).
+
+That replacement is **not** part of this spec. It is task **T10**, which runs right after Wave 1 merges and swaps `getRawWhereClause` for `getEventFiltersWhereClause` across the four event analytics functions, with tests proving a `properties.*` filter actually filters. Phase 1 here **assumes T10 has landed** and starts from the flat `getEventFiltersWhereClause` call it leaves behind, converting that call to the group compiler. Keeping the two apart means no two workers edit the same region of `overview.service.ts`.
+
+Phase 1 is therefore blocked on T10. If T10 has not merged when Phase 1 starts, stop and report rather than doing T10's work inline.
 
 Everything else in the product keeps its current flat-filter behaviour, byte for byte. `getEventFiltersWhereClause` and `buildFilterWhere` keep their signatures and their tests.
 
@@ -404,13 +412,13 @@ A separate spec and separate PRs, one surface at a time, each adding `filterGrou
 
 Cohorts are the one to sequence last: `cohort.validation.ts` keeps its **own** copy of `zChartEventFilter` (with a comment explaining the cycle it avoids), so it needs the same copy-not-import treatment for `zFilterGroup`, and cohort criteria feed the `inCohort` filters that Phase 1 already compiles.
 
-## 11. Questions for the user
+## 11. Decisions on the open questions
 
-Answered so far: A3 (no lossy mirror — §4.1), A10 (scope badge cosmetic, proof in §5.4), delivery scope (Event Analytics first — §10).
+All six were answered by the project owner when the spec was approved. Recorded here so the implementation does not reopen them.
 
-1. **A4** — should an explicitly-empty property value (`prop=""`) count as *present* for `hasProperty`? Answering yes needs a change at ingest, not here. §5.4's `map['key']` rule depends on the current "empty = missing" reading, so a yes would need a different presence form for profile properties.
-2. Should `missingProperty` be offered for **cohort** filters (`inCohort` / `notInCohort` share the operator select)? This spec excludes it.
-3. **A13** — is a clickable join word discoverable enough as the group-operator control, or should each group header get its own `AND` / `OR` toggle like the root?
-4. **A14** — below 1200px, should the folded-in dimension chips be editable as ordinary conditions (operator select and all), or stay locked to `is` selects the way the wide toolbar renders them?
-5. **A11** — should `Clear` in the panel footer clear the staged group only, or also clear the applied filters immediately (like `Clear all` on the chip row does)?
-6. §10 Phase 1 makes Event Analytics stop using `getRawWhereClause`, so property and profile filters start working there where they were silently dropped before. Confirm that behaviour change is wanted in Phase 1 rather than deferred.
+1. **A4 — empty string stays "missing". No.** `toDots` at ingest cannot tell "sent empty" from "not sent", so the stricter reading is not observable. `hasProperty` and `missingProperty` remain exact negations of each other, and §5.4's `map['key'] != ''` rule keeps working.
+2. **`missingProperty` is not offered for cohort filters in Phase 1.** Cohorts move in Phase 2, in the order §10 gives.
+3. **A13 — follow artboard `1c` exactly.** The clickable join word is the group-operator control. Do not add a per-group toggle the design does not have.
+4. **A14 — below 1200px the folded chips stay locked to `is` selects**, as the wide toolbar renders them. No operator select inside a collapsed chip: narrow screens are where mis-taps happen, and the full panel is always one tap away.
+5. **A11 — footer `Clear` clears the staged group only.** It never touches applied filters; the user always has a way back. `Clear all` on the chip row keeps its current behaviour.
+6. **The `getRawWhereClause` replacement is T10's, not Phase 1's.** See §10.
