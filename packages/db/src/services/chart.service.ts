@@ -1196,6 +1196,65 @@ function isNumericColumn(columnName: string): boolean {
   return numericColumns.includes(columnName);
 }
 
+// Matches the events `properties` map access that getSelectPropertyKey emits:
+// `properties['key']`, optionally qualified with a table alias. Deliberately
+// excludes `profile.properties['key']` — rewriteProfilePropertyRefs narrows
+// those refs to scalar CTE columns and drops the full map, so a
+// `mapContains(profile.properties, ...)` term would survive the rewrite
+// untouched and reference a column the CTE no longer selects.
+const EVENTS_PROPERTY_MAP_ACCESS = /^(?:([A-Za-z_]\w*)\.)?(properties)\[(.+)\]$/;
+
+/**
+ * The map an absence guard would test, or null when `whereFrom` is not an
+ * events-map access (a wildcard array, a scalar column, a profile CTE ref).
+ */
+function getPropertyMapAccess(
+  whereFrom: string,
+): { map: string; key: string } | null {
+  const match = EVENTS_PROPERTY_MAP_ACCESS.exec(whereFrom);
+  if (!match) {
+    return null;
+  }
+  const [, alias, map, key] = match;
+  if (alias === 'profile') {
+    return null;
+  }
+  return { map: alias ? `${alias}.${map}` : map!, key: key! };
+}
+
+/**
+ * Numeric comparison (`gt`/`lt`/`gte`/`lte`) on an untyped property.
+ *
+ * Uses `toFloat64OrNull`, never `toFloat64OrZero`: a missing map key reads as
+ * the empty string and a non-numeric value cannot be parsed, and coercing
+ * either to 0 made them satisfy comparisons like `< 1` or `> -1` (spec §5.2).
+ * `toFloat64OrNull` yields NULL for both, and every comparison with NULL is
+ * NULL, which WHERE treats as no match.
+ */
+function buildNumericComparison(
+  whereFrom: string,
+  sqlOperator: '>' | '<' | '>=' | '<=',
+  value: (string | number)[],
+  isWildcard: boolean,
+): string {
+  const compare = (operand: string, val: string | number) =>
+    `toFloat64OrNull(${operand}) ${sqlOperator} toFloat64(${sqlstring.escape(String(val).trim())})`;
+
+  if (isWildcard) {
+    // An absent wildcard match yields an empty array, and arrayExists over an
+    // empty array is already false — no absence guard needed.
+    return `arrayExists(x -> ${value
+      .map((val) => compare('x', val))
+      .join(' OR ')}, ${whereFrom})`;
+  }
+
+  const clause = `(${value.map((val) => compare(whereFrom, val)).join(' OR ')})`;
+  const mapAccess = getPropertyMapAccess(whereFrom);
+  return mapAccess
+    ? `(mapContains(${mapAccess.map}, ${mapAccess.key}) AND ${clause})`
+    : clause;
+}
+
 export function getEventFiltersWhereClause(
   filters: IChartEventFilter[],
   projectId?: string,
@@ -1492,75 +1551,39 @@ export function getEventFiltersWhereClause(
           break;
         }
         case 'gt': {
-          if (isWildcard) {
-            where[id] = `arrayExists(x -> ${value
-              .map(
-                (val) =>
-                  `toFloat64OrZero(x) > toFloat64(${sqlstring.escape(String(val).trim())})`
-              )
-              .join(' OR ')}, ${whereFrom})`;
-          } else {
-            where[id] = `(${value
-              .map(
-                (val) =>
-                  `toFloat64OrZero(${whereFrom}) > toFloat64(${sqlstring.escape(String(val).trim())})`
-              )
-              .join(' OR ')})`;
-          }
+          where[id] = buildNumericComparison(
+            whereFrom,
+            '>',
+            value,
+            isWildcard,
+          );
           break;
         }
         case 'lt': {
-          if (isWildcard) {
-            where[id] = `arrayExists(x -> ${value
-              .map(
-                (val) =>
-                  `toFloat64OrZero(x) < toFloat64(${sqlstring.escape(String(val).trim())})`
-              )
-              .join(' OR ')}, ${whereFrom})`;
-          } else {
-            where[id] = `(${value
-              .map(
-                (val) =>
-                  `toFloat64OrZero(${whereFrom}) < toFloat64(${sqlstring.escape(String(val).trim())})`
-              )
-              .join(' OR ')})`;
-          }
+          where[id] = buildNumericComparison(
+            whereFrom,
+            '<',
+            value,
+            isWildcard,
+          );
           break;
         }
         case 'gte': {
-          if (isWildcard) {
-            where[id] = `arrayExists(x -> ${value
-              .map(
-                (val) =>
-                  `toFloat64OrZero(x) >= toFloat64(${sqlstring.escape(String(val).trim())})`
-              )
-              .join(' OR ')}, ${whereFrom})`;
-          } else {
-            where[id] = `(${value
-              .map(
-                (val) =>
-                  `toFloat64OrZero(${whereFrom}) >= toFloat64(${sqlstring.escape(String(val).trim())})`
-              )
-              .join(' OR ')})`;
-          }
+          where[id] = buildNumericComparison(
+            whereFrom,
+            '>=',
+            value,
+            isWildcard,
+          );
           break;
         }
         case 'lte': {
-          if (isWildcard) {
-            where[id] = `arrayExists(x -> ${value
-              .map(
-                (val) =>
-                  `toFloat64OrZero(x) <= toFloat64(${sqlstring.escape(String(val).trim())})`
-              )
-              .join(' OR ')}, ${whereFrom})`;
-          } else {
-            where[id] = `(${value
-              .map(
-                (val) =>
-                  `toFloat64OrZero(${whereFrom}) <= toFloat64(${sqlstring.escape(String(val).trim())})`
-              )
-              .join(' OR ')})`;
-          }
+          where[id] = buildNumericComparison(
+            whereFrom,
+            '<=',
+            value,
+            isWildcard,
+          );
           break;
         }
       }
