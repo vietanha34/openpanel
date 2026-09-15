@@ -1,3 +1,4 @@
+import { EventAnalyticsChart } from '@/components/event-analytics/chart';
 import { EventTreeTable } from '@/components/event-analytics/event-tree-table';
 import type { EventAnalyticsRangeInput } from '@/components/event-analytics/tree-nodes';
 import {
@@ -51,6 +52,7 @@ function EventAnalytics() {
         <OverviewFilterButton enableEventsFilter />
         <OverviewFiltersButtons className="p-0" />
       </div>
+      <EventAnalyticsChart {...input} selected={selected} />
       <EventTreeTable input={input} selection={selection} />
     </div>
   );
