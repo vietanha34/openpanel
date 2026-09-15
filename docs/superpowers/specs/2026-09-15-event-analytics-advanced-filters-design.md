@@ -17,7 +17,7 @@ Replace the flat, implicitly-ANDed filter list with a condition tree:
 - At most two group levels: a root group plus one level of sub-groups.
 - Two new operators: `hasProperty` ("has property") and `missingProperty` ("missing property").
 - The same tree drives the Event Analytics chart and the Event Analytics tree table, and — because it reuses the shared filter compiler — every other report surface that already accepts `IChartEventFilter[]`.
-- Saved reports, saved URLs, and the public API keep working without a data migration.
+- Saved reports, saved URLs, and the public API keep working without a data migration; a report that *uses* an advanced filter refuses to render on a client too old to understand it, rather than drawing a wrong number (§4.1).
 
 ## 2. Current state
 
@@ -104,8 +104,32 @@ export function resolveFilterGroup(
 Consequences:
 
 - Old saved reports (Postgres JSON), old saved URLs and old API clients keep working untouched. No Prisma migration, no backfill.
-- Anything that writes a group also writes the flattened `filters` array holding the conditions that are still combined with a top-level `AND` (root `op: 'and'`, direct condition children). When the root is `or`, or the condition sits in a sub-group, it is omitted from the flat array. Old readers therefore see a **narrower-or-equal** filter, never a wider one. This is a deliberate one-way lossy mirror for old clients; the group is the source of truth.
-- Once the UI writes groups, `filters` is still the field the AI filter agent (`packages/trpc/src/agents/filter-command.ts`) and the public API emit. Both keep working because a flat array is a valid implicit-AND group.
+- A flat array stays a valid implicit-AND group, so the AI filter agent (`packages/trpc/src/agents/filter-command.ts`) and the public API keep emitting `filters` and keep working unchanged.
+
+### 4.1 A report that uses advanced filters must not render on an old client
+
+There is deliberately **no** flattened mirror of the group into `filters`. A mirror can only ever be lossy — a root `OR`, a sub-group, or a `hasProperty` condition has no flat equivalent — and a lossy mirror means an old dashboard draws a **number that is wrong and looks right**. Silent wrong numbers are worse than a visible failure. The rule is therefore: a report whose filtering cannot be expressed as a flat AND list **refuses to render on any client that does not understand groups**.
+
+A group is *flat-expressible* when its root `op` is `and`, it has no sub-group children, and no condition uses `hasProperty` / `missingProperty`. For a flat-expressible group, `filters` is written normally and `filterGroup` is omitted — nothing changes for anyone. Everything else is an **advanced report**, and is stored as:
+
+```jsonc
+{
+  "schemaVersion": 2,                 // new: advanced-filter reports only
+  "filterGroup": { /* the real filter */ },
+  "filters": [
+    { "name": "__advanced_filters__", "operator": "advancedFilterGroup", "value": [] }
+  ]
+}
+```
+
+Two independent trip wires, because either one alone fails:
+
+1. **The sentinel in `filters`.** `operator: "advancedFilterGroup"` is not a member of the *old* `operators` enum, so an old client's `zChartEventFilter` parse **fails** on load. This is mechanical: it works even against a client that has never heard of `schemaVersion` and would have ignored it. `advancedFilterGroup` is added to `operators` in `packages/constants/index.ts` purely so that new clients can recognise the sentinel; it is never selectable in the operator dropdown and `compileEventFilter` throws if it ever reaches SQL compilation.
+2. **`schemaVersion: 2`.** Explicit, greppable, and what the *server* checks. Every read path that loads a report (`reports.service.ts`) checks it before running any query: on `schemaVersion > 1` from a caller that did not declare group support, the tRPC procedure throws `PRECONDITION_FAILED` with the message *"This report uses advanced filters. Update to a newer dashboard version to view it."* The API refusing means the old client shows that exact sentence wherever it surfaces tRPC error text, rather than the generic zod parse error it would get from the sentinel alone.
+
+Honest limit: an old client that renders a saved report entirely from its own cached copy, without a server round-trip, gets only trip wire 1 — a parse failure with a generic "could not load report" message, not the sentence above. It still refuses to draw numbers, which is the property that matters.
+
+Scope of the refusal: the *report* refuses. Report lists, names, dashboards containing the report, and edit links keep working; only the chart and table area shows the message. Downgrading is possible at any time — clear the advanced filter and the report saves as a normal flat report again.
 
 ## 5. SQL compilation
 
@@ -158,21 +182,77 @@ sb.where = getFilterWhere(resolveFilterGroup(event.filters, event.filterGroup), 
 
 where `getFilterWhere` returns `{}` or `{ fgroup: '<clause>' }`. Existing callers keep merging `sb.where` values with `AND`, so a single key is enough and no caller needs to learn about grouping.
 
-Call sites to convert: `chart.service.ts` (2), `event.service.ts` (3), `conversion.service.ts` (2), `funnel.service.ts`, `sankey.service.ts`, `retention.service.ts`, `overview.service.ts`, `trpc/src/routers/chart.ts`, plus `session.service.ts` / `profile.service.ts` / `cohort.service.ts` for the `buildFilterWhere` side. Each converts only when its input schema actually carries a group; the rest keep calling the array API, which still works.
+Which call sites convert, and when, is §10. Every call site that has not been converted keeps calling the array API, which is unchanged and still works.
 
 ### 5.3 The new operators
 
 Property presence depends on where the property lives:
 
-| Filter name | `hasProperty` | `missingProperty` |
-|---|---|---|
-| Map-backed property (`properties.*`, `group.*`) | `mapContains(properties, 'k') AND properties['k'] != ''` | `NOT mapContains(properties, 'k') OR properties['k'] = ''` |
-| Top-level column (`country`, `path`, …) | `<col> IS NOT NULL AND <col> != ''` | `<col> IS NULL OR <col> = ''` |
-| Array column (wildcard path) | `arrayExists(x -> x != '', <expr>)` | `NOT arrayExists(x -> x != '', <expr>)` |
+| Filter name | `hasProperty` | `missingProperty` | |
+|---|---|---|---|
+| Map-backed property (`properties.*`, `group.*`) | `properties['k'] != ''` | `properties['k'] = ''` | (`mapContains` is deliberately **not** used — see §5.4) |
+| Top-level column (`country`, `path`, …) | `<col> IS NOT NULL AND <col> != ''` | `<col> IS NULL OR <col> = ''` | |
+| Array column (wildcard path) | `arrayExists(x -> x != '', <expr>)` | `NOT arrayExists(x -> x != '', <expr>)` | |
 
-Empty string counts as missing. ClickHouse `Map(String,String)` returns `''` for an absent key and the ingest path (`toDots`, `event.service.ts:386`) cannot distinguish "sent empty" from "not sent", so treating them alike is the only behaviour that is consistent between the two. This makes `hasProperty` / `missingProperty` exact complements — `missingProperty` is the negation of `hasProperty` for the same key, with no third state.
+Empty string counts as missing. ClickHouse `Map(String,String)` returns `''` for an absent key and the ingest path (`toDots`, `event.service.ts:386`) cannot distinguish "sent empty" from "not sent", so treating them alike is the only behaviour that is consistent between the two. It also means presence needs no `mapContains`, which §5.4 shows is actively unsafe for profile properties. This makes `hasProperty` / `missingProperty` exact complements — `missingProperty` is the negation of `hasProperty` for the same key, with no third state.
 
 `missingProperty` is the operator users need now that T6 makes numeric comparisons skip missing values. Document that pairing in the operator dropdown help text.
+
+### 5.4 Cross-scope groups and the profile-property CTE
+
+An `OR` group may mix scopes — one branch on a profile property, the other on an event property. Proving that this compiles correctly is a precondition for A10 (the scope badge being cosmetic), because the profile side does **not** read from a plain Map at query time.
+
+**The trap.** `chart.service.ts` narrows profile properties for memory reasons: `collectProfilePropertyKeys` collects every `profile.properties.<key>` reference, `profilePropertiesCteSelect` projects *only those keys* as scalar columns, and `rewriteProfilePropertyRefs` string-replaces `profile.properties['<key>']` with the scalar alias. When no wildcard reference forces `needsFullMap`, the CTE **does not select the `properties` Map at all**. Any clause that names the bare map — `mapContains(profile.properties, 'plan')` — is not matched by the rewrite (it contains no `['plan']` text), survives into the final SQL, and references a column that no longer exists. This is the failure T6 hit in PR #7.
+
+**Rule that avoids it:** for `profile.properties.*`, presence is expressed **only through the `map['key']` form**, never through `mapContains` or any other bare-map function. Since §5.3 already defines an empty string as missing (A4), the `map['key']` form is sufficient:
+
+| Operator | `properties.*` (events) | `profile.properties.*` |
+|---|---|---|
+| `hasProperty` | `e.properties['k'] != ''` | `profile.properties['k'] != ''` |
+| `missingProperty` | `e.properties['k'] = ''` | `profile.properties['k'] = ''` |
+
+This supersedes the `mapContains` form sketched in §5.3 for the profile case, and makes `mapContains` unnecessary for the events case too — one rule instead of two. The same rule binds T6's numeric fix: `toFloat64OrNull(profile.properties['k']) > toFloat64('5')` is safe; adding a `mapContains(profile.properties, 'k')` guard next to it would reintroduce the bug.
+
+**Worked example.** Root group, `op: 'or'`:
+
+```
+OR ├─ profile.properties.plan   is            'pro'
+   └─ properties.level_mode     hasProperty
+```
+
+`compileFilterGroup` emits, before rewriting:
+
+```sql
+(profile.properties['plan'] = 'pro' OR e.properties['level_mode'] != '')
+```
+
+`collectProfilePropertyKeys` sees one profile reference, so `keys = ['plan']`, `needsFullMap = false`, and the CTE is:
+
+```sql
+WITH profile AS (
+  SELECT id as "profile.id",
+         properties['plan'] as `profile.properties.plan`,
+         ...
+  FROM profiles FINAL WHERE project_id = 'p'
+)
+```
+
+`rewriteProfilePropertyRefs(sql, ['plan'])` then yields the final WHERE:
+
+```sql
+... FROM events e
+LEFT ANY JOIN profile ON profile.id = e.profile_id
+WHERE project_id = 'p'
+  AND (`profile.properties.plan` = 'pro' OR e.properties['level_mode'] != '')
+```
+
+Both branches resolve: the left against the CTE's scalar column, the right against the events Map. **Cross-scope OR is correct**, so the scope badge stays cosmetic (A10).
+
+Three implementation obligations follow, all of them things the flat-array code gets for free and the group code does not:
+
+1. **Scope detection must scan the flattened tree, not `event.filters`.** `chart.service.ts` decides whether to add the profile join with `event.filters.some(f => f.name.startsWith('profile.'))`, and feeds `collectProfilePropertyKeys([...event.filters, ...breakdowns, ...])`. With a group, the conditions are no longer in `event.filters`. Every such scan becomes `flattenConditions(resolveFilterGroup(event.filters, event.filterGroup))`. Missing this produces exactly the PR #7 symptom — a reference to a join or column that was never added. The same applies to the group-join detection (`group.` prefix) and the cohort CTE collection.
+2. **`LEFT ANY JOIN` defaults, not NULLs.** An event whose profile has no row in the CTE reads `''` for every profile scalar. So `missingProperty` on a profile property is **true** for events with no profile at all, and inside an `OR` that widens the result set. This is the correct reading ("this event has no such profile property") but it is worth a line in the UI help text and a test.
+3. **A wildcard profile reference anywhere in the group** (`profile.properties.*`) sets `needsFullMap`, the CTE keeps the Map, and the `map['key']` form still works — no special case needed. Test it anyway, since it is the branch where both shapes coexist.
 
 ## 6. UI
 
@@ -223,16 +303,24 @@ Event Analytics URL state (`use-event-query-filters.ts`) keeps the existing flat
 ## 7. Error handling
 
 - Invalid group from an API client: zod rejects at the router boundary; the structural depth limit means a three-level payload fails validation rather than compiling.
+- Advanced report loaded by a client without group support: `PRECONDITION_FAILED`, "This report uses advanced filters. Update to a newer dashboard version to view it." The chart and table area shows that message; the report name, its dashboard and the edit link stay usable (§4.1).
+- `advancedFilterGroup` reaching `compileEventFilter`: throws. It is a storage sentinel, never a real condition.
 - Group with no compilable children: treated as no filter (see §5.2).
 - `hasProperty` with an empty `name`: rejected by the UI; compiles to `null` server-side.
 - Truncated / corrupt `fg` URL param: discarded, flat filters used, toast shown.
 
 ## 8. Testing
 
-- `packages/validation`: a three-level group fails `zFilterGroup`; a flat array round-trips through `resolveFilterGroup` into an implicit-AND root; the flattened mirror omits sub-group and `or`-root conditions.
+- `packages/validation`: a three-level group fails `zFilterGroup`; a flat array round-trips through `resolveFilterGroup` into an implicit-AND root; a flat-expressible group saves as plain `filters` with no `schemaVersion`, while a group with a sub-group / `or` root / `hasProperty` saves with `schemaVersion: 2` and the sentinel.
+- `packages/validation`: the `advancedFilterGroup` sentinel fails the *previous* `zChartEventFilter` (pin the old operator list in the test so the trip wire cannot rot).
+- `packages/trpc`: loading a `schemaVersion: 2` report as a caller without group support throws `PRECONDITION_FAILED` with the advanced-filters message, and does not execute a query.
 - `packages/db`: unit tests on `compileFilterGroup` with a stub `compile` — AND/OR nesting parenthesisation, dropped child inside AND, dropped child inside OR, all-dropped group returning `null`.
 - `packages/db`: SQL-shape tests for `hasProperty` / `missingProperty` on a map property, a top-level column and an array column; plus a test asserting `missingProperty` and `hasProperty` on the same key produce mutually exclusive clauses.
 - `packages/db`: a regression test pinning the T6 interaction — a row with no `level` key matches `missingProperty` and does **not** match `level < 1`.
+- `packages/db`: the §5.4 cross-scope case end to end — an `OR` of `profile.properties.plan is pro` and `properties.level_mode hasProperty` produces SQL whose profile branch is the rewritten scalar alias `` `profile.properties.plan` `` and whose CTE selects that column; assert the string `mapContains(profile.properties` never appears in any generated SQL.
+- `packages/db`: the same group with a wildcard profile reference added sets `needsFullMap`, the CTE keeps `properties as "profile.properties"`, and the `map['key']` branch still resolves.
+- `packages/db`: scope detection over a group — a `profile.*` condition buried in a sub-group still adds the profile join and still registers its key with `collectProfilePropertyKeys` (the PR #7 failure mode).
+- `packages/db`: Phase 1 only — an Event Analytics query with a `properties.*` condition actually filters, where `getRawWhereClause` would have dropped it.
 - Existing `filter-where.test.ts` and the chart SQL tests must pass unchanged; that is the proof the §5.1 extraction was behaviour-preserving.
 - Commands: `pnpm vitest run <path>`, `pnpm typecheck`. Never run `pnpm format` (project rule).
 
@@ -246,8 +334,8 @@ Alternatives: (a) root is implicit and the two levels are both user-visible grou
 **A2 — Additive `filterGroup` field, no data migration.**
 Alternatives: (a) change `filters` to a union of array-or-group — breaks every existing consumer's types and the public API; (b) migrate saved report JSON in Postgres — irreversible, and a bad migration corrupts user reports for a feature they have not asked for yet. Additive is reversible: drop the field and everything still runs.
 
-**A3 — The flat `filters` mirror is lossy and narrower-or-equal.**
-Alternative: stop writing `filters` once a group exists, so old readers see no filters at all. Rejected — an old reader silently showing *unfiltered* data is a worse failure than showing over-filtered data. Writing only the top-level ANDed conditions guarantees the mirror can never be wider than the real filter.
+**A3 — RESOLVED by the project owner: no lossy mirror; old clients refuse to render.**
+An earlier draft proposed mirroring the group into a narrower-or-equal flat `filters` array. Rejected on review: an old client would then draw numbers that are wrong and look right, with nothing to warn the user. Silent wrong numbers beat every alternative for damage. §4.1 replaces it with an explicit refusal — `schemaVersion: 2` checked by the server, plus an `advancedFilterGroup` sentinel that breaks the old client's own schema validation. No longer an assumption.
 
 **A4 — Empty string counts as a missing property.**
 Alternative: `mapContains` alone, so an explicitly-empty value counts as present. Rejected because ClickHouse `Map(String,String)` returns `''` for absent keys and the ingest flattening loses the distinction, so the stricter reading is not actually observable and would make `hasProperty` and `missingProperty` non-complementary.
@@ -267,8 +355,8 @@ An earlier draft of this spec hid the button entirely. The design file settles i
 **A9 — `fg` URL param carries JSON.**
 Alternatives: a compact custom encoding, or storing the group server-side and putting an id in the URL. Rejected as premature: JSON is what the existing filter params already carry, and no measurement says the URLs are too long.
 
-**A10 — The scope badge (`USER PROPERTY` / `EVENT PROPERTY`) is a derived label, not a constraint.**
-The design shows one badge per group, and in the sample each group happens to be single-scope. This spec computes the badge from the conditions the group holds and shows `MIXED` when they disagree, rather than forbidding mixed groups. Alternative: make scope a real property of the group and restrict which conditions may be added. Rejected as a much larger model change that the design does not clearly demand — see question 4.
+**A10 — RESOLVED by the project owner, conditional on proof: the scope badge is a derived label, not a constraint.**
+The condition attached to the decision was that a cross-scope `OR` must be shown to compile to valid SQL, given that `rewriteProfilePropertyRefs` narrows profile properties to scalar CTE columns and drops the full Map. §5.4 carries that proof, plus the rule it depends on (`map['key']` form only for `profile.properties.*`, never `mapContains`) and the three implementation obligations it exposes — chief among them that scope detection must scan the flattened condition tree, not `event.filters`. Mixed groups are allowed; the badge is computed from the conditions and reads `MIXED` when they disagree.
 
 **A11 — Panel edits are staged; `Apply filters` commits.**
 The design's footer has an explicit `Apply filters` button, so the panel cannot be live-updating. Alternative: apply on every change and treat the button as a close affordance. Rejected — it would re-query ClickHouse on every keystroke in a value field.
@@ -282,13 +370,47 @@ The design shows the join word (`AND` / `OR`) per row and describes the operator
 **A14 — Dimension chips fold into the same popover below 1200px, as plain root-level AND conditions.**
 The design card mandates the folding but not the data model behind it. Alternative: keep dimension filters in a separate state and render them in the popover as a distinct section that never mixes with the group tree. Rejected — they are `is` conditions on `country` / `app_version` / event name, exactly what the root group already holds, and a second model would need its own AND/OR story.
 
-## 10. Questions for the user
+## 10. Delivery phases
 
-1. **A3** — is the lossy flat mirror acceptable, or should a saved report that uses OR/sub-groups be unreadable by old clients instead of under-filtered?
-2. **A4** — should an explicitly-empty property value (`prop=""`) count as *present* for `hasProperty`? Answering yes needs a change at ingest, not here.
-3. Should `missingProperty` be offered for **cohort** filters (`inCohort` / `notInCohort` share the operator select)? This spec excludes it.
-4. **A10** — is the scope badge purely informational, or should a group be restricted to a single property scope (all user properties or all event properties)? The design's sample has one of each but never shows a mixed group.
-5. Scope check: this spec converts every `getEventFiltersWhereClause` / `buildFilterWhere` call site to the group API. Should the first implementation instead limit itself to the Event Analytics surfaces and convert the rest later?
-6. **A13** — is a clickable join word discoverable enough as the group-operator control, or should each group header get its own `AND` / `OR` toggle like the root?
-7. **A14** — below 1200px, should the folded-in dimension chips be editable as ordinary conditions (operator select and all), or stay locked to `is` selects the way the wide toolbar renders them?
-8. **A11** — should `Clear` in the panel footer clear the staged group only, or also clear the applied filters immediately (like `Clear all` on the chip row does)?
+The group model touches the one function every report surface filters through. Converting all of them at once would be a diff nobody can review and a rollback that takes the whole product with it. Two phases:
+
+### Phase 1 — Event Analytics only
+
+Ships: the validation module (§3), `resolveFilterGroup` and the refusal mechanism (§4), the `compileEventFilter` / `compileTableFilter` extraction and `compileFilterGroup` walker (§5.1–5.2), the two new operators (§5.3), the profile-property rule (§5.4), and the panel UI (§6) mounted on the Event Analytics route only.
+
+Converted call sites: the Event Analytics query path alone — `buildEventAnalyticsQuery` and the `eventAnalyticsList` / `eventAnalyticsTotals` / `eventPropertyKeys` / `eventPropertyValues` procedures from T1–T3.
+
+One blocker specific to this path: `buildEventAnalyticsQuery` filters through `OverviewService.getRawWhereClause('events', filters)`, which **silently drops every filter whose name is not in `WHITELISTED_FILTERS`** (`overview.service.ts:34`) — no `properties.*`, no `profile.*`, no cohorts. The design's own sample conditions (`user.install_source`, `level_start.level_id`) are all in the dropped set, so Event Analytics cannot filter on them today at all. Worse, a silent drop inside an `OR` group **widens** the result (§5.2). Phase 1 therefore routes Event Analytics through the group compiler directly (events scope) instead of `getRawWhereClause`, and keeps `getRawWhereClause` for the other overview widgets that still call it. This is a behaviour change for Event Analytics — property filters start working — and needs to be called out in the PR.
+
+Everything else in the product keeps its current flat-filter behaviour, byte for byte. `getEventFiltersWhereClause` and `buildFilterWhere` keep their signatures and their tests.
+
+### Phase 2 — the rest of the product
+
+A separate spec and separate PRs, one surface at a time, each adding `filterGroup` to that surface's input schema and its UI:
+
+| Call site | File | Count |
+|---|---|---|
+| chart series + aggregate | `packages/db/src/services/chart.service.ts` | 2 |
+| event list / breakdown | `packages/db/src/services/event.service.ts` | 3 |
+| conversion A/B | `packages/db/src/services/conversion.service.ts` | 2 |
+| funnel steps | `packages/db/src/services/funnel.service.ts` | 1 |
+| sankey | `packages/db/src/services/sankey.service.ts` | 1 |
+| retention | `packages/db/src/services/retention.service.ts` | 1 |
+| overview widgets | `packages/db/src/services/overview.service.ts` | 1 (`getRawWhereClause`) |
+| chart router | `packages/trpc/src/routers/chart.ts` | 1 |
+| sessions | `packages/db/src/services/session.service.ts` | 3 (`buildFilterWhere`) |
+| profiles | `packages/db/src/services/profile.service.ts` | 3 (`buildFilterWhere`) |
+| cohorts | `packages/db/src/services/cohort.service.ts` | 1 (`buildFilterWhere`) |
+
+Cohorts are the one to sequence last: `cohort.validation.ts` keeps its **own** copy of `zChartEventFilter` (with a comment explaining the cycle it avoids), so it needs the same copy-not-import treatment for `zFilterGroup`, and cohort criteria feed the `inCohort` filters that Phase 1 already compiles.
+
+## 11. Questions for the user
+
+Answered so far: A3 (no lossy mirror — §4.1), A10 (scope badge cosmetic, proof in §5.4), delivery scope (Event Analytics first — §10).
+
+1. **A4** — should an explicitly-empty property value (`prop=""`) count as *present* for `hasProperty`? Answering yes needs a change at ingest, not here. §5.4's `map['key']` rule depends on the current "empty = missing" reading, so a yes would need a different presence form for profile properties.
+2. Should `missingProperty` be offered for **cohort** filters (`inCohort` / `notInCohort` share the operator select)? This spec excludes it.
+3. **A13** — is a clickable join word discoverable enough as the group-operator control, or should each group header get its own `AND` / `OR` toggle like the root?
+4. **A14** — below 1200px, should the folded-in dimension chips be editable as ordinary conditions (operator select and all), or stay locked to `is` selects the way the wide toolbar renders them?
+5. **A11** — should `Clear` in the panel footer clear the staged group only, or also clear the applied filters immediately (like `Clear all` on the chip row does)?
+6. §10 Phase 1 makes Event Analytics stop using `getRawWhereClause`, so property and profile filters start working there where they were silently dropped before. Confirm that behaviour change is wanted in Phase 1 rather than deferred.
