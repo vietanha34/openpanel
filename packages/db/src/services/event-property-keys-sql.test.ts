@@ -77,6 +77,8 @@ describe('buildEventPropertyKeysQuery', () => {
     expect(sql).toContain('has_nested');
     expect(sql).toContain('non_numeric');
     expect(sql).toContain('toFloat64OrNull');
+    // Spec section 3: only NON-EMPTY values decide whether a key is numeric.
+    expect(sql).toContain("!= ''");
   });
 
   it('pages by events desc, fetching one extra row to detect the next cursor', () => {
@@ -175,6 +177,9 @@ describe('getEventPropertyKeys against ClickHouse', () => {
     { profile_id: 'u2', properties: { 'payload.a': '3', score: '20' } },
     // `score` also arrives as text, which flips its inferred type to `str`.
     { profile_id: 'u2', properties: { score: 'ten' } },
+    // An empty value says nothing about the type, so it must not force `str`.
+    { profile_id: 'u1', properties: { level: '1', note: '' } },
+    { profile_id: 'u2', properties: { level: '', note: '' } },
   ];
 
   beforeAll(async () => {
@@ -213,8 +218,26 @@ describe('getEventPropertyKeys against ClickHouse', () => {
     expect(rows).toEqual([
       // 3 events carry `score`, 2 carry something under `payload`.
       { key: 'score', events: 3, users: 2, kind: 'key', type: 'str' },
+      { key: 'level', events: 2, users: 2, kind: 'key', type: 'num' },
+      { key: 'note', events: 2, users: 2, kind: 'key', type: 'num' },
       { key: 'payload', events: 2, users: 2, kind: 'obj', type: 'unknown' },
     ]);
+  });
+
+  it('ignores empty values when inferring the type', async (ctx) => {
+    if (!chReachable) ctx.skip('ClickHouse not reachable at CLICKHOUSE_URL');
+
+    const { rows } = await overviewService.getEventPropertyKeys({
+      ...base,
+      projectId,
+    });
+    const byKey = new Map(rows.map((row) => [row.key, row.type]));
+
+    // `level` carries '1' and '', so the empty one must not make it `str`.
+    expect(byKey.get('level')).toBe('num');
+    // `note` is empty everywhere. Deliberate: with nothing to parse there is
+    // also nothing to sort, so `num` is harmless and keeps the rule simple.
+    expect(byKey.get('note')).toBe('num');
   });
 
   it('lists the keys inside an object and types them on their own values', async (ctx) => {

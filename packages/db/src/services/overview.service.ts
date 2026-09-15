@@ -451,7 +451,11 @@ export function buildEventPropertyKeysQuery({
       'count() AS events',
       'uniqExact(profile_id) AS users',
       `max(arrayExists(k -> startsWith(k, concat(${escapedPrefix}, segment, '.')), matched)) AS has_nested`,
-      `countIf(toFloat64OrNull(properties[concat(${escapedPrefix}, segment)]) IS NULL) AS non_numeric`,
+      // Spec section 3: only non-empty values decide the type. An empty value
+      // carries no type information, so it must not push the key to `str`.
+      // A key whose values are all empty therefore lands on `num` -- deliberate:
+      // there is nothing to parse and nothing to sort, so the rule stays simple.
+      `countIf(properties[concat(${escapedPrefix}, segment)] != '' AND toFloat64OrNull(properties[concat(${escapedPrefix}, segment)]) IS NULL) AS non_numeric`,
     ])
     .from('segments')
     .groupBy(['segment'])
