@@ -42,8 +42,6 @@ import {
   publicProcedure,
 } from '../trpc';
 import {
-  mockEventAnalyticsList,
-  mockEventAnalyticsTotals,
   mockEventPropertyKeys,
   mockEventPropertyValues,
 } from './overview.event-analytics-mock';
@@ -514,11 +512,31 @@ export const overviewRouter = createTRPCRouter({
   // See docs/superpowers/specs/2026-09-15-event-analytics-tree-design.md
   eventAnalyticsList: overviewProcedure
     .input(zEventAnalyticsListInput.extend({ shareId: z.string().optional() }))
-    .query(({ input }) => mockEventAnalyticsList(input)),
+    .use(cacher)
+    .query(async ({ input }) => {
+      const { timezone } = await getSettingsForProject(input.projectId);
+      const { current } = await getCurrentAndPrevious(
+        { ...input, timezone },
+        false,
+        timezone
+      )(overviewService.getEventAnalyticsList.bind(overviewService));
+
+      return current;
+    }),
 
   eventAnalyticsTotals: overviewProcedure
     .input(zEventAnalyticsTotalsInput.extend({ shareId: z.string().optional() }))
-    .query(() => mockEventAnalyticsTotals()),
+    .use(cacher)
+    .query(async ({ input }) => {
+      const { timezone } = await getSettingsForProject(input.projectId);
+      const { current } = await getCurrentAndPrevious(
+        { ...input, timezone },
+        false,
+        timezone
+      )(overviewService.getEventAnalyticsTotals.bind(overviewService));
+
+      return current;
+    }),
 
   eventPropertyKeys: overviewProcedure
     .input(zEventPropertyKeysInput.extend({ shareId: z.string().optional() }))

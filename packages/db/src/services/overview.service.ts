@@ -1,6 +1,14 @@
 import { average, sum } from '@openpanel/common';
 import { chartColors } from '@openpanel/constants';
-import { type IChartEventFilter, zTimeInterval } from '@openpanel/validation';
+import {
+  type IChartEventFilter,
+  type IEventAnalyticsListInput,
+  type IEventAnalyticsListOutput,
+  type IEventAnalyticsListRow,
+  type IEventAnalyticsMetricRow,
+  type IEventAnalyticsSortKey,
+  zTimeInterval,
+} from '@openpanel/validation';
 import sqlstring from 'sqlstring';
 import { z } from 'zod';
 import {
@@ -17,6 +25,15 @@ import {
 
 // Constants
 const ROLLUP_DATE_PREFIX = '1970-01-01';
+
+/**
+ * ClickHouse returns counts as strings; an empty range returns no row at all.
+ * The UI divides by these, so never hand it `NaN` or `Infinity`.
+ */
+function toFiniteCount(value: number | string | undefined): number {
+  const count = Number(value);
+  return Number.isFinite(count) ? count : 0;
+}
 
 // Toggle revenue tracking in overview queries
 const INCLUDE_REVENUE = true; // TODO: Make this configurable later
@@ -229,6 +246,89 @@ export function buildEventAnalyticsQuery({
     .from('event_stats')
     .crossJoin('event_totals')
     .orderBy('events', 'DESC');
+}
+
+type IEventAnalyticsRangeQuery = {
+  projectId: string;
+  filters: IChartEventFilter[];
+  startDate: string;
+  endDate: string;
+  timezone: string;
+};
+
+export type IGetEventAnalyticsListInput = IEventAnalyticsRangeQuery &
+  Pick<IEventAnalyticsListInput, 'sort' | 'dir' | 'limit'> & {
+    search?: string;
+    cursor?: number;
+  };
+
+export type IGetEventAnalyticsTotalsInput = IEventAnalyticsRangeQuery;
+
+/**
+ * Every event analytics query reads the same filtered slice of the events
+ * table, so the totals can never drift away from the rows of the list.
+ */
+function buildEventAnalyticsBaseQuery({
+  projectId,
+  filters,
+  startDate,
+  endDate,
+  timezone,
+}: IEventAnalyticsRangeQuery) {
+  return clix(ch, timezone)
+    .from(TABLE_NAMES.events, false)
+    .where('project_id', '=', projectId)
+    .where('created_at', 'BETWEEN', [
+      clix.datetime(startDate, 'toDateTime'),
+      clix.datetime(endDate, 'toDateTime'),
+    ])
+    .rawWhere(new OverviewService(ch).getRawWhereClause('events', filters));
+}
+
+const EVENT_ANALYTICS_SORT_COLUMN: Record<IEventAnalyticsSortKey, string> = {
+  events: 'events',
+  users: 'users',
+  epu: 'events / users',
+};
+
+export function buildEventAnalyticsListQuery({
+  search,
+  sort,
+  dir,
+  cursor,
+  limit,
+  ...range
+}: IGetEventAnalyticsListInput) {
+  const query = buildEventAnalyticsBaseQuery(range)
+    .select<IEventAnalyticsListRow>([
+      'name',
+      'count() AS events',
+      'uniqExact(profile_id) AS users',
+    ])
+    .groupBy(['name'])
+    .orderBy(
+      EVENT_ANALYTICS_SORT_COLUMN[sort],
+      dir === 'asc' ? 'ASC' : 'DESC'
+    )
+    .orderBy('name', 'ASC')
+    // One row past the page tells the caller whether a next page exists.
+    .limit(limit + 1)
+    .offset(cursor ?? 0);
+
+  if (search) {
+    query.rawWhere(`name ILIKE ${sqlstring.escape(`%${search}%`)}`);
+  }
+
+  return query;
+}
+
+export function buildEventAnalyticsTotalsQuery(
+  input: IGetEventAnalyticsTotalsInput
+) {
+  return buildEventAnalyticsBaseQuery(input).select<IEventAnalyticsMetricRow>([
+    'count() AS events',
+    'uniqExact(profile_id) AS users',
+  ]);
 }
 
 export const zGetTopLinkOutInput = z.object({
@@ -1449,6 +1549,34 @@ export class OverviewService {
 
   async getEventAnalytics(input: IGetEventAnalyticsInput) {
     return buildEventAnalyticsQuery(input).execute();
+  }
+
+  async getEventAnalyticsList(
+    input: IGetEventAnalyticsListInput
+  ): Promise<IEventAnalyticsListOutput> {
+    const rows = await buildEventAnalyticsListQuery(input).execute();
+    const hasNextPage = rows.length > input.limit;
+    const cursor = input.cursor ?? 0;
+
+    return {
+      rows: rows.slice(0, input.limit).map((row) => ({
+        name: row.name,
+        events: toFiniteCount(row.events),
+        users: toFiniteCount(row.users),
+      })),
+      nextCursor: hasNextPage ? cursor + input.limit : null,
+    };
+  }
+
+  async getEventAnalyticsTotals(
+    input: IGetEventAnalyticsTotalsInput
+  ): Promise<IEventAnalyticsMetricRow> {
+    const [totals] = await buildEventAnalyticsTotalsQuery(input).execute();
+
+    return {
+      events: toFiniteCount(totals?.events),
+      users: toFiniteCount(totals?.users),
+    };
   }
 
   async getTopLinkOut({
