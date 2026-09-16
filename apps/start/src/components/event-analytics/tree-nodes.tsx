@@ -26,6 +26,7 @@ import {
   formatPercent,
   iconFor,
   indentStyle,
+  loadMoreIndentStyle,
   subPercent,
   valueKindForLevel,
 } from './tree-utils';
@@ -67,6 +68,13 @@ const ICON_CLASSES: Record<TreeNodeKind, string> = {
   value: 'bg-muted/60 text-muted-foreground',
   leaf: 'bg-muted/60 text-muted-foreground',
 };
+
+/** Rows tint by depth, so a deep branch reads as one block (design §tree). */
+const DEPTH_BACKGROUNDS = ['bg-background', 'bg-muted/10', 'bg-muted/20'];
+
+function depthBackground(depth: number) {
+  return DEPTH_BACKGROUNDS[Math.min(depth, DEPTH_BACKGROUNDS.length - 1)];
+}
 
 function selectedColor(selection: TreeSelection, path: string) {
   return selection.selected.find((item) => item.path === path)?.color ?? null;
@@ -119,11 +127,33 @@ function TreeRow({
   const color = selectable ? selectedColor(ctx.selection, path) : null;
 
   return (
-    <div className="flex w-full items-center border-b bg-background hover:bg-muted/40">
+    <div
+      className={cn(
+        'flex min-h-11 w-full items-center border-b hover:bg-muted/40',
+        depthBackground(depth),
+      )}
+    >
       <div
-        className="flex min-w-0 flex-1 items-center gap-2.5 py-2 pl-3.5"
+        className="flex min-w-0 flex-1 items-center gap-2.5 py-2"
         style={indentStyle(depth)}
       >
+        {/* The design puts the chevron before the checkbox, so the tree's
+            structure reads first and the plot toggle second. */}
+        <button
+          type="button"
+          aria-label={expanded ? `Collapse ${label}` : `Expand ${label}`}
+          className="shrink-0"
+          disabled={!expandable}
+          onClick={onToggle}
+        >
+          <ChevronRight
+            className={cn(
+              'size-4 shrink-0 text-muted-foreground transition-transform',
+              expandable ? 'visible' : 'invisible',
+              expanded && 'rotate-90',
+            )}
+          />
+        </button>
         {selectable ? (
           <input
             type="checkbox"
@@ -141,13 +171,6 @@ function TreeRow({
           disabled={!expandable}
           onClick={onToggle}
         >
-          <ChevronRight
-            className={cn(
-              'size-4 shrink-0 text-muted-foreground transition-transform',
-              expandable ? 'visible' : 'invisible',
-              expanded && 'rotate-90',
-            )}
-          />
           <span
             className={cn(
               'flex size-[18px] shrink-0 items-center justify-center rounded font-mono text-[9px] font-semibold',
@@ -212,9 +235,12 @@ export function LoadMoreRow({
       onClick={onClick}
     >
       <div
-        className="flex items-center gap-2.5 py-2 pl-3.5"
-        style={indentStyle(depth)}
+        className="flex items-center gap-2.5 py-2"
+        style={loadMoreIndentStyle(depth)}
       >
+        {/* Two empty slots stand in for the chevron and the checkbox so the
+            row lines up with the values it extends. */}
+        <span className="size-4 shrink-0" />
         <span className="size-4 shrink-0" />
         <span className="flex size-[18px] shrink-0 items-center justify-center rounded bg-blue-50 font-mono text-[9px] font-semibold text-blue-600">
           <Plus className="size-3" />
@@ -238,7 +264,7 @@ export function NodeErrorRow({
   return (
     <div className="flex w-full items-center border-b bg-destructive/5">
       <div
-        className="flex items-center gap-2.5 py-2 pl-3.5"
+        className="flex items-center gap-2.5 py-2"
         style={indentStyle(depth)}
       >
         <span className="size-4 shrink-0" />
@@ -260,7 +286,7 @@ function NoteRow({ depth, text }: { depth: number; text: string }) {
   return (
     <div className="flex w-full items-center border-b">
       <div
-        className="flex items-center gap-2.5 py-2 pl-3.5"
+        className="flex items-center gap-2.5 py-2"
         style={indentStyle(depth)}
       >
         <span className="size-4 shrink-0" />
