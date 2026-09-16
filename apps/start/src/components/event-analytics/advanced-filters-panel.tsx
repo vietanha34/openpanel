@@ -61,7 +61,7 @@ function OpToggle({
           type="button"
           onClick={() => onChange(candidate)}
           className={cn(
-            'px-2.5 text-xs font-medium focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-highlight',
+            'px-2.5 text-[12px] font-medium focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-highlight',
             candidate === 'or' && 'border-l',
             op === candidate
               ? 'bg-foreground text-background'
@@ -112,10 +112,10 @@ export function AdvancedFiltersPanel({ value, onChange }: Props) {
           className="w-[min(600px,calc(100vw-2rem))] p-0"
         >
           <div className="row items-center gap-2.5 border-b p-3">
-            <span className="flex-1 text-sm font-semibold">
+            <span className="flex-1 text-[13px] font-semibold">
               Advanced filters
             </span>
-            <span className="text-xs text-muted-foreground">Match</span>
+            <span className="text-[11px] text-muted-foreground">Match</span>
             <OpToggle
               op={draft.op}
               onChange={(op) => setDraft(setGroupOp(draft, null, op))}
@@ -136,7 +136,7 @@ export function AdvancedFiltersPanel({ value, onChange }: Props) {
                   <span className="rounded-full bg-def-200 px-2 py-0.5 text-[10px] font-semibold tracking-wide">
                     {card.scope}
                   </span>
-                  <span className="flex-1 text-xs text-muted-foreground">
+                  <span className="flex-1 text-[12px] text-muted-foreground">
                     {card.hint}
                   </span>
                   <span className="font-mono text-[10px] text-muted-foreground">
@@ -241,7 +241,7 @@ export function AdvancedFiltersPanel({ value, onChange }: Props) {
           </div>
 
           <div className="row items-center gap-2 border-t p-2.5">
-            <span className="flex-1 text-xs text-muted-foreground">
+            <span className="flex-1 text-[12px] text-muted-foreground">
               Applies to chart and table
             </span>
             {/* Clears the staged edit only — applied filters need the chips or
@@ -254,6 +254,7 @@ export function AdvancedFiltersPanel({ value, onChange }: Props) {
               Clear
             </Button>
             <Button
+              variant="cta"
               disabled={applyDisabled}
               onClick={() => {
                 onChange(draft.children.length > 0 ? draft : null);
@@ -287,7 +288,7 @@ export function AdvancedFiltersPanel({ value, onChange }: Props) {
             </button>
           ))}
           <button
-            className="text-xs text-highlight"
+            className="text-[12px] text-highlight"
             onClick={() => onChange(null)}
             type="button"
           >
