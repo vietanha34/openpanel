@@ -1,7 +1,6 @@
 {
   "extends": "@openpanel/tsconfig/base.json",
   "compilerOptions": {
-    "baseUrl": ".",
     "tsBuildInfoFile": "node_modules/.cache/tsbuildinfo.json",
     "strictNullChecks": true
   },
