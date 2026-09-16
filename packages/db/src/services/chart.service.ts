@@ -1111,6 +1111,7 @@ export async function getAggregateChartSql({
 
   // Add a constant date field for aggregate charts (groupByLabels expects it)
   // Use startDate as the date value since we're aggregating across the entire range
+  // Invariant: one bucket per serie. Totals of non-additive metrics (epu, averages) are only correct because of it; pinned by event-analytics-aggregate-bucket.test.ts.
   sb.select.date = `${sqlstring.escape(startDate)} as date`;
 
   // Add breakdowns to SELECT and GROUP BY
