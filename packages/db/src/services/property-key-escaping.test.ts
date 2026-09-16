@@ -96,8 +96,9 @@ describe('getSelectPropertyKey / key escaping', () => {
     expect(getSelectPropertyKey('profile.properties.plan')).toBe(
       "profile.properties['plan']",
     );
+    // A trailing `.*` is a wildcard, not a literal `*` (B5).
     expect(getSelectPropertyKey('properties.a.*')).toBe(
-      "arrayMap(x -> trim(x), mapValues(mapExtractKeyLike(properties, 'a.*')))",
+      "arrayMap(x -> trim(x), mapValues(mapExtractKeyLike(properties, 'a.%')))",
     );
     expect(getSelectPropertyKey('country')).toBe('country');
   });
