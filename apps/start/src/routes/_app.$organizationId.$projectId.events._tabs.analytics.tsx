@@ -76,8 +76,16 @@ function EventAnalytics() {
   const [coldStartPending, setColdStartPending] = useState(true);
   const coldStartQuery = useInfiniteQuery(
     trpc.overview.eventAnalyticsList.infiniteQueryOptions(
-      // Mirrors EventTreeTable's first request, so both share one fetch.
-      { ...input, search: undefined, sort: 'events', dir: 'desc', limit: 10 },
+      // Mirrors EventTreeTable's first request, so both share one fetch. It
+      // only runs without stored prefs, i.e. with the default metrics and sort.
+      {
+        ...input,
+        metrics: prefs.metrics,
+        search: undefined,
+        sort: prefs.sort.key,
+        dir: prefs.sort.dir,
+        limit: 10,
+      },
       {
         initialCursor: 0,
         getNextPageParam: (lastPage) => lastPage.nextCursor,
@@ -102,6 +110,11 @@ function EventAnalytics() {
       updatePrefs({ selected: coldStart });
     }
   }, [coldStartPending, coldStartRows, prefsStatus, paths.length, updatePrefs]);
+
+  const setSort = useCallback(
+    (sort: typeof prefs.sort) => updatePrefs({ sort }),
+    [updatePrefs],
+  );
 
   const setChartCollapsed = useCallback(
     (collapsed: boolean) =>
@@ -136,7 +149,13 @@ function EventAnalytics() {
         collapsed={prefs.chart.collapsed}
         onCollapsedChange={setChartCollapsed}
       />
-      <EventTreeTable input={input} selection={selection} />
+      <EventTreeTable
+        input={input}
+        metrics={prefs.metrics}
+        sort={prefs.sort}
+        onSortChange={setSort}
+        selection={selection}
+      />
     </div>
   );
 }
