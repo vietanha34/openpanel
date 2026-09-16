@@ -43,5 +43,5 @@
 
 **Produces:** `useEventAnalyticsPrefs(projectId) => { status: 'loading' | 'absent' | 'stored'; prefs: IEventAnalyticsPreferences; update(patch: Partial<Omit<IEventAnalyticsPreferences, 'version'>>): void }`. `update` is a no-op while `loading` (so an early write cannot clobber the stored entry); pending writes flush on project switch / unmount.
 
-- [ ] Implement hook; route restores `selected` once when `status === 'stored'` and calls `update({ selected })` on change after load.
+- [ ] Implement hook; the route drops its `useState` selection and derives it from `prefs.selected` (colour by index, as before), toggling through `update({ selected })`. No restore effect is needed, so there is no transient write of an empty selection on load.
 - [ ] `pnpm -F start typecheck` (after `pnpm install && pnpm codegen`); rerun tests. Commit.

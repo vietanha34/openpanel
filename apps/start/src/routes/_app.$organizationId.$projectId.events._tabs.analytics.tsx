@@ -12,9 +12,10 @@ import {
   useEventQueryFilterGroup,
   useEventQueryFilters,
 } from '@/hooks/use-event-query-filters';
+import { useEventAnalyticsPrefs } from '@/hooks/use-event-analytics-prefs';
 import { getChartColor } from '@/utils/theme';
 import { createFileRoute } from '@tanstack/react-router';
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useMemo } from 'react';
 
 export const Route = createFileRoute(
   '/_app/$organizationId/$projectId/events/_tabs/analytics',
@@ -38,23 +39,25 @@ function EventAnalytics() {
     [projectId, range, startDate, endDate, filters, filterGroup],
   );
 
-  // Lifted here because the chart panel (T5) plots exactly these paths.
-  const [selected, setSelected] = useState<{ path: string; color: string }[]>(
-    [],
+  // Lifted here because the chart panel (T5) plots exactly these paths. The
+  // persisted preferences own the selection, so it survives a reload (§6).
+  const { prefs, update: updatePrefs } = useEventAnalyticsPrefs(projectId);
+  const paths = prefs.selected;
+  // Colour by position so the swatches stay dense after a removal.
+  const selected = useMemo(
+    () => paths.map((path, index) => ({ path, color: getChartColor(index) })),
+    [paths],
   );
-  const toggle = useCallback((path: string) => {
-    setSelected((current) => {
-      const without = current.filter((item) => item.path !== path);
-      if (without.length !== current.length) {
-        // Re-colour so the swatches stay dense after a removal.
-        return without.map((item, index) => ({
-          path: item.path,
-          color: getChartColor(index),
-        }));
-      }
-      return [...current, { path, color: getChartColor(current.length) }];
-    });
-  }, []);
+  const toggle = useCallback(
+    (path: string) => {
+      updatePrefs({
+        selected: paths.includes(path)
+          ? paths.filter((item) => item !== path)
+          : [...paths, path],
+      });
+    },
+    [paths, updatePrefs],
+  );
   const selection = useMemo(() => ({ selected, toggle }), [selected, toggle]);
 
   return (
