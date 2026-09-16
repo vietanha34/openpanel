@@ -5,7 +5,7 @@
   "main": "index.ts",
   "scripts": {
     "dev": "email dev --dir src/emails -p 3939",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "node ../../node_modules/typescript7/bin/tsc --noEmit"
   },
   "dependencies": {
     "@openpanel/db": "workspace:*",

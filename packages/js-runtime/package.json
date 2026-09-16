@@ -8,7 +8,7 @@
   },
   "scripts": {
     "test": "vitest",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "node ../../node_modules/typescript7/bin/tsc --noEmit"
   },
   "dependencies": {
     "@babel/parser": "^7.26.0"

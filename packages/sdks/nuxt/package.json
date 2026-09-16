@@ -22,7 +22,7 @@
     "build": "npx nuxt-module-build build",
     "dev:prepare": "npx nuxt-module-build build --stub",
     "prepack": "npx nuxt-module-build build",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "node ../../../node_modules/typescript7/bin/tsc --noEmit"
   },
   "dependencies": {
     "@openpanel/web": "workspace:1.4.1-local"
