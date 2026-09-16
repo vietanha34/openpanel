@@ -1284,6 +1284,49 @@ export function compileEventFilter(
         ? EVENT_FIELD_ALIASES[filter.name] ?? filter.name
         : normalizeEventField(filter.name);
 
+    if (operator === 'advancedFilterGroup') {
+      throw new Error(
+        'advancedFilterGroup is a storage sentinel and must never reach SQL compilation',
+      );
+    }
+
+    // Presence checks run before the empty-value guard below: they legitimately
+    // carry no values, like isNull / isNotNull.
+    if (operator === 'hasProperty' || operator === 'missingProperty') {
+      if (!name) return clause;
+
+      const has = operator === 'hasProperty';
+      const expr = getSelectPropertyKey(
+        name,
+        projectId,
+        undefined,
+        undefined,
+        eventsAlias,
+      );
+
+      if (name.includes('*')) {
+        clause = has
+          ? `arrayExists(x -> x != '', ${expr})`
+          : `NOT arrayExists(x -> x != '', ${expr})`;
+        return clause;
+      }
+
+      // Map-backed keys render as `map['key']`, and that is the ONLY form safe
+      // for profile.properties.*: the profile CTE narrows those keys to scalar
+      // columns and drops the Map entirely, so mapContains(profile.properties,
+      // ...) would survive rewriteProfilePropertyRefs untouched and reference a
+      // column that no longer exists. An absent key reads as '', so the lookup
+      // answers presence on its own. See the advanced filters spec §5.4.
+      clause = expr.includes('[')
+        ? has
+          ? `${expr} != ''`
+          : `${expr} = ''`
+        : has
+          ? `(${expr} IS NOT NULL AND ${expr} != '')`
+          : `(${expr} IS NULL OR ${expr} = '')`;
+      return clause;
+    }
+
     if (
       (operator === 'inCohort' || operator === 'notInCohort') &&
       projectId

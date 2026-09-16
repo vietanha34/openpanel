@@ -61,7 +61,9 @@ function compileScalarClause(
   if (
     value.length === 0 &&
     operator !== 'isNull' &&
-    operator !== 'isNotNull'
+    operator !== 'isNotNull' &&
+    operator !== 'hasProperty' &&
+    operator !== 'missingProperty'
   ) {
     return null;
   }
@@ -126,6 +128,13 @@ function compileScalarClause(
       return `(${column} = '' OR ${column} IS NULL)`;
     case 'isNotNull':
       return `(${column} != '' AND ${column} IS NOT NULL)`;
+    // Presence on these tables is always a plain column: this file never
+    // addresses a Map. An empty string counts as missing, so the two operators
+    // are exact negations of each other.
+    case 'hasProperty':
+      return `(${column} IS NOT NULL AND ${column} != '')`;
+    case 'missingProperty':
+      return `(${column} IS NULL OR ${column} = '')`;
     case 'gt': {
       return `(${value
         .map(
