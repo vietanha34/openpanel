@@ -1,6 +1,12 @@
 import { ReportChart } from '@/components/report-chart';
+import { Button } from '@/components/ui/button';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
-import { ChartColumnIcon, ChartLineIcon } from 'lucide-react';
+import {
+  ChartColumnIcon,
+  ChartLineIcon,
+  Minimize2Icon,
+  MoveDiagonalIcon,
+} from 'lucide-react';
 import { useMemo, useState } from 'react';
 
 import type { IChartEventFilter, IChartRange, IChartType } from '@openpanel/validation';
@@ -37,6 +43,8 @@ type EventAnalyticsChartProps = {
   endDate?: string | null;
   filters: IChartEventFilter[];
   selected: EventAnalyticsSelection[];
+  collapsed: boolean;
+  onCollapsedChange: (collapsed: boolean) => void;
 };
 
 export function EventAnalyticsChart({
@@ -46,6 +54,8 @@ export function EventAnalyticsChart({
   endDate,
   filters,
   selected,
+  collapsed,
+  onCollapsedChange,
 }: EventAnalyticsChartProps) {
   const [metric, setMetric] = useState<EventAnalyticsChartMetric>('events');
   const [granularity, setGranularity] =
@@ -78,6 +88,22 @@ export function EventAnalyticsChart({
       chartType,
     ],
   );
+
+  // Not rendering ReportChart is what keeps its query from running (§7).
+  if (collapsed) {
+    return (
+      <div className="row justify-center">
+        <Button
+          variant="outline"
+          className="h-8 gap-2 px-3.5 shadow-sm"
+          onClick={() => onCollapsedChange(false)}
+        >
+          Show chart
+          <MoveDiagonalIcon size={14} className="text-muted-foreground" />
+        </Button>
+      </div>
+    );
+  }
 
   return (
     <div className="col rounded-lg border bg-background">
@@ -134,6 +160,16 @@ export function EventAnalyticsChart({
             <ChartColumnIcon size={15} />
           </ToggleGroupItem>
         </ToggleGroup>
+        <Button
+          variant="outline"
+          size="icon"
+          className="h-[30px] w-8"
+          title="Hide chart"
+          aria-label="Hide chart"
+          onClick={() => onCollapsedChange(true)}
+        >
+          <Minimize2Icon size={15} />
+        </Button>
       </div>
       <div className="p-3">
         {report.series.length === 0 ? (
