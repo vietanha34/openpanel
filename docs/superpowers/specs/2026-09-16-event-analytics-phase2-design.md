@@ -95,11 +95,28 @@ Rejected alternatives: (a) `metrics: Record<string, number>` alone — breaks ev
 
 `zEventAnalyticsSortKey` is an enum of three. With ten possible metrics, sorting by column needs the key to be open. It becomes a `z.string()` validated against the *requested* metrics plus the three legacy values, so an old client sending `sort: 'epu'` still works and a hand-written payload asking to sort by a column it did not request is rejected rather than silently ignored.
 
-### D4 — Parameter metrics read `properties[param]`, and non-numeric values never contribute
+### D4 — In a metric, a missing parameter is 0. In a filter, it is still nothing.
 
-Every parameter metric names one event property. Numeric aggregations wrap it in `toFloat64OrNull`, which ClickHouse's aggregate functions skip over — so a row whose parameter is missing or non-numeric does not drag a `sum` or an `avg` toward zero. This is the same principle T6 established for comparison filters, and the reason `toFloat64OrZero` was removed there.
+AppMetrica defines these metrics with an explicit rule, quoted in Appendix A:
 
-`Unique parameter values` counts distinct non-empty raw strings, not numbers: a parameter like `app_version` is legitimately non-numeric and still has a meaningful cardinality.
+> A missing value or parameter in the event during the calculation is interpreted as 0
+
+This is a **deliberate product decision** and it is the **opposite** of the rule T6 established for filters. Both are correct, because they answer different questions:
+
+| Context | Rule | Why |
+|---|---|---|
+| **Filter** (`properties.level < 1`) | A missing or non-numeric value matches **nothing**. `toFloat64OrNull`, NULL never satisfies a comparison. | The user is asking "which events have a level below 1". An event with no level has no level; treating it as 0 would silently pull unrelated events into the result. T6 fixed exactly this bug. |
+| **Metric** (`Sum of parameter values`) | A missing or non-numeric value counts as **0**. `coalesce(toFloat64OrNull(...), 0)`. | The user is asking "how much, in total, across these events". AppMetrica's answer is that an event contributing nothing contributes zero, and the denominator is every event in the node — so the average of a sparsely-populated parameter is honestly low rather than flatteringly high. |
+
+**Do not "unify" these two.** A future reader who sees `toFloat64OrZero` in a metric and `toFloat64OrNull` in a filter will be tempted to make them match; that would either reintroduce the T6 bug or silently change every metric's numbers. The rule is: **filters ask about membership, metrics ask about quantity.**
+
+The affected metrics, per the AppMetrica definitions: `sum_param`, `avg_param`, `median_param`, `sum_param_user`, `uniq_param_user`. Their concrete consequences:
+
+- **`avg_param` divides by `count()`, every event in the node** — not by the number of events that carry the parameter. An event without the parameter is a real zero in the average.
+- **`median_param`'s value set includes those zeros.** A node where most events lack the parameter will have a median of 0, and that is the intended answer.
+- **`uniq_param_user` counts 0 as one of the distinct values** when any event in the node is missing the parameter.
+
+`Unique parameter values` (the by-events metric) has **no** such sentence in the source definition — see A11 for how this spec resolves it.
 
 ### D5 — `% of all users` and every per-user metric are non-additive
 
@@ -213,19 +230,19 @@ All of these are additional aggregate expressions in the **same** `GROUP BY` the
 | `users` | `uniqExact(profile_id)` |
 | `epu` | derived client-side: `events / users`, `0` when `users = 0` |
 | `pctu` | derived client-side: `users / totals.users`, `0` when `totals.users = 0` |
-| `uniq_param` | `uniqExactIf(properties['p'], properties['p'] != '')` |
-| `sum_param` | `sum(toFloat64OrNull(properties['p']))` |
-| `avg_param` | `avg(toFloat64OrNull(properties['p']))` |
-| `median_param` | `quantileExact(0.5)(toFloat64OrNull(properties['p']))` |
-| `uniq_param_user` | `uniqExactIf(properties['p'], properties['p'] != '') / uniqExact(profile_id)` |
-| `sum_param_user` | `sum(toFloat64OrNull(properties['p'])) / uniqExact(profile_id)` |
+| `uniq_param` | `uniqExact(coalesce(toFloat64OrNull(properties['p']), 0))` — see A11 |
+| `sum_param` | `sum(coalesce(toFloat64OrNull(properties['p']), 0))` |
+| `avg_param` | `sum(coalesce(toFloat64OrNull(properties['p']), 0)) / count()` |
+| `median_param` | `quantileExact(0.5)(coalesce(toFloat64OrNull(properties['p']), 0))` |
+| `uniq_param_user` | `uniqExact(coalesce(toFloat64OrNull(properties['p']), 0)) / uniqExact(profile_id)` |
+| `sum_param_user` | `sum(coalesce(toFloat64OrNull(properties['p']), 0)) / uniqExact(profile_id)` |
 
 Notes that are easy to get wrong:
 
-- `toFloat64OrNull` returns NULL for a missing or non-numeric value, and ClickHouse aggregates skip NULLs. So `avg` averages over the rows that actually carry a number, and `sum` is unaffected — which is the whole point of D4. A row with no such property does **not** count as a zero.
-- `quantileExact`, not `quantile`: the approximate form would make the median wobble between page loads on the same data, and the user asked for the median specifically because it resists outliers.
-- The two `per user` metrics divide by the group's own `uniqExact(profile_id)`, not by the report total. Division by zero cannot happen in a group that exists (a group has at least one event, so at least one `profile_id`), but the totals row divides by the deduplicated total and must guard it.
-- `uniqExactIf` with `!= ''` implements A4 from Phase 1: an absent key reads as `''`, so it is excluded from cardinality rather than counted as a distinct empty value.
+- **`avg_param` is written as `sum(...) / count()`, not as `avg(...)`.** ClickHouse's `avg` over a nullable expression divides by the count of non-NULL rows, which is precisely the behaviour D4 forbids. Writing the division out makes the denominator explicit and impossible to lose in a refactor. `coalesce(..., 0)` plus `avg` would also work, but the explicit form documents the intent at the call site.
+- `quantileExact`, not `quantile`: the approximate form would make the median wobble between page loads on the same data, and the median was chosen precisely because it resists outliers. Known ceiling: `quantileExact` holds every value of the group in memory, making this the most expensive metric in the catalogue. If P8 measures it as too slow on the fixture, the escape hatch is `quantile` — a one-expression change, at the cost of a number that drifts slightly between runs.
+- The two `per user` metrics divide by the group's own `uniqExact(profile_id)`, not by the report total. A group that exists has at least one event and therefore at least one `profile_id`, so division by zero cannot occur there; the **totals row** divides by the deduplicated total and must guard it.
+- `coalesce(toFloat64OrNull(x), 0)` is used rather than `toFloat64OrZero(x)` even though they agree here. The nested form names the decision — "parse, and if that fails, deliberately use zero" — where the bare `toFloat64OrZero` is exactly the call T6 removed from the filter path, and a grep for it should keep returning nothing.
 - Parameter keys reach SQL through the existing property-key escaping (`sqlstring.escape`), never by interpolation. `property-key-escaping.test.ts` covers the helper; the new expressions must use it.
 
 ## 6. Persisted preferences (R5)
@@ -308,7 +325,7 @@ Common preamble:
 > Implement §4 exactly in `packages/validation/src/event-analytics.ts`: the metric id enum, the exported catalogue with label / group / param / additive / locked per §4.1, `metricKey` per §4.2, `metrics` on the range schema with the `superRefine` rules in §4.3, `metrics?: Record<string, number>` on `IEventAnalyticsMetricRow`, and `sort` widened to a string validated against the request's own metrics plus `events` / `users` / `epu`. Also add the preferences schema from §6. Tests must cover every rejection listed in the Wave 0 task. Change no other package.
 
 **P1:**
-> In `packages/db/src/services/overview.service.ts`, build the per-metric aggregate expressions of §5 from `input.metrics` and add them to the SELECT of all four event analytics builders, returning them under `metrics` keyed by `metricKey`. Extend `EVENT_ANALYTICS_SORT_COLUMN` into a function that maps any requested metric key to its SQL expression, with `pctu` mapping to the `users` column. Escape parameter keys with the existing helper — never interpolate. When `metrics` is absent the emitted SQL must be byte-identical to today; add a test asserting that. Cover each metric's expression, and cover that a missing parameter neither lowers `avg_param` nor adds a value to `uniq_param`.
+> In `packages/db/src/services/overview.service.ts`, build the per-metric aggregate expressions of §5 from `input.metrics` and add them to the SELECT of all four event analytics builders, returning them under `metrics` keyed by `metricKey`. Extend `EVENT_ANALYTICS_SORT_COLUMN` into a function that maps any requested metric key to its SQL expression, with `pctu` mapping to the `users` column. Escape parameter keys with the existing helper — never interpolate. When `metrics` is absent the emitted SQL must be byte-identical to today; add a test asserting that. Cover each metric's expression, and cover §3 D4's semantics explicitly: an event whose parameter is missing **must** pull `avg_param` down (the denominator is `count()`, every event in the node) and **must** contribute a `0` to the distinct set of `uniq_param` and `uniq_param_user`. Assert that no metric expression uses bare `toFloat64OrZero` and that no filter expression gained a `coalesce` — the two contexts stay opposite on purpose.
 
 **P2:**
 > In `getEventAnalyticsWhereClause`, replace the branch that returns `null` for `profile.properties.*` with a self-contained subselect: `profile_id IN (SELECT id FROM profiles FINAL WHERE project_id = <escaped> AND <clause>)`, where `<clause>` is compiled by the same per-filter logic against the profiles table. Do NOT build a profile CTE and do NOT touch `chart.service.ts` — see §3 D1 for why. Presence stays `properties['k'] != ''`; assert in a test that no generated SQL contains `mapContains`. Rewrite the test in `event-analytics-filters.test.ts` that currently pins the dropping behaviour, and add one proving a profile filter inside an OR group narrows rather than widens.
@@ -329,15 +346,15 @@ Common preamble:
 > Make the chart follow the chosen metrics: the metric select lists exactly the metrics in the current set (labels from the catalogue) instead of the fixed three, and the plotted series uses the selected metric key.
 
 **P8:**
-> Extend the event analytics ClickHouse fixture with a numeric parameter, a non-numeric parameter, and events missing the parameter entirely. Assert every metric of §5 against hand-computed values, including that a missing parameter neither lowers `avg_param` nor adds a distinct value to `uniq_param`, and that `users` in the totals row is less than the sum of the branch `users` when users overlap.
+> Extend the event analytics ClickHouse fixture with a numeric parameter, a non-numeric parameter, and events missing the parameter entirely. Assert every metric of §5 against hand-computed values, under §3 D4's semantics: a missing parameter **lowers** `avg_param`, **is counted as `0`** in `median_param`'s value set, and **adds `0`** to the distinct set of `uniq_param` / `uniq_param_user`. Also assert that `users` in the totals row is less than the sum of the branch `users` when users overlap. Time `median_param` on the fixture and report the number — `quantileExact` is the catalogue's most expensive metric and §5 records `quantile` as its escape hatch.
 
 **P9:**
 > Run the dashboard and compare the Events › Analytics tab against `render_preview` of states `2a`, `2b`, `2c` and `2d`. Fix gaps inside `apps/start/src/components/event-analytics/`. Report screenshots.
 
 ## 9. Assumptions
 
-**A1 — `Unique parameter values per user` is total distinct ÷ users.**
-The design's help text ("Distinct parameter values per user") also reads as "the average, per user, of that user's own distinct count", which needs a nested `GROUP BY profile_id` and a second aggregation — materially more expensive. Chose the cheap reading, which matches how `Events per user` is defined right next to it in the same group. If the expensive reading is wanted, it is a different SQL shape and should be decided before P1 — see question 1.
+**A1 — SETTLED: `Unique parameter values per user` is total distinct ÷ users who fired the event.**
+Confirmed by the project owner against the AppMetrica definition. The alternative reading — the average of each user's own distinct count — needs a nested `GROUP BY profile_id` and a second aggregation, and is not what the source defines. Missing parameters contribute a `0` to the distinct set (D4).
 
 **A2 — A parameter metric with no parameter chosen is never sent to the server.**
 The design lets a pending chip exist (`Sum of parameter values: —`). The spec makes `Apply` reject a draft holding one, rather than sending a partial metric the server would have to interpret. Alternative: send it and let the column render empty. Rejected — a column that is permanently blank looks like a data bug.
@@ -351,8 +368,8 @@ The user said to drop it for now and the design has no such group. The catalogue
 **A5 — Two columns may use the same metric with different parameters.**
 `metricKey` includes the parameter, so `sum_param:day` and `sum_param:level_id` coexist. The design does not forbid it and the picker does not check. Alternative: one column per metric id. Rejected — comparing the same aggregation across two parameters is the obvious use.
 
-**A6 — The parameter list comes from the existing property-keys endpoint.**
-The design hard-codes `paramList`. The real dropdown should list the project's actual event property keys, which `overview.eventPropertyKeys` already returns. Scoping it to the properties of the events currently in the table would be better but needs a new endpoint; the flat project-wide list is the smaller step.
+**A6 — SETTLED: the parameter dropdown lists every event property in the project.**
+From `overview.eventPropertyKeys`, which already returns them. Scoping the list to the events currently in the table was considered and rejected by the project owner: it needs a new endpoint for a convenience, and a project-wide list is never wrong, only longer. The dropdown has a search box for that.
 
 **A7 — Metrics apply to every level of the tree, not only to event rows.**
 The design's `metricCell` renders metrics for every row. A parameter metric on a deep value node is well defined (the rows under that node still have the parameter), so no special case is needed. Where the parameter is absent from that branch the aggregates simply see no numbers, which D4 already defines.
@@ -366,11 +383,37 @@ Keeping them warm would make expanding instant, at the cost of querying ClickHou
 **A10 — R3 produces no task.**
 Both reported defects verified correct against the current design and code (§2.1). Re-applying them would be a no-op diff, and a no-op diff in a review queue costs more than it saves.
 
-## 10. Questions for the user
+**A11 — `Unique parameter values` (by events) also counts a missing parameter as `0`.**
+The AppMetrica definition attaches the "missing is 0" sentence to five metrics and not to this one (Appendix A). Two readings were available: count only the values actually present, or apply the same rule as its per-user twin. Chose the same rule, for one reason: `uniq_param` and `uniq_param_user` differ only by a division, and a user reading `uniq_param = 4` next to `uniq_param_user = 4 / users` would have no way to know the numerators were computed over different value sets. A silent inconsistency between two adjacent columns is worse than either reading on its own. Reversing this is a one-expression change (`uniqExactIf(properties['p'], properties['p'] != '')`) if the source definition turns out to mean the other thing.
 
-1. **A1** — is `Unique parameter values per user` the total distinct count divided by users (cheap, chosen here), or the average of each user's own distinct count (needs a nested aggregation)? These give different numbers whenever users share values.
-2. **A6** — should the parameter dropdown list every event property in the project, or only the properties of the events currently shown in the table? The second is friendlier and needs a new endpoint.
-3. `median_param` uses `quantileExact`, which is exact but holds all values in memory per group. On a high-cardinality tree this is the most expensive metric in the catalogue. Accept it, or fall back to `quantile` (approximate, cheaper, slightly unstable between runs)?
-4. **R5 scope** — should the persisted view also restore the *expanded* tree nodes, or only the selection? Restoring expansion means firing every child query on load.
-5. **P2 cost** — the profile subselect scans `profiles` once per event analytics query. If a project has millions of profiles this is worth measuring before shipping. Should P2 include a benchmark step, or is that premature?
-6. **A5** — should the picker allow the same metric with two different parameters, or is that confusing enough to forbid?
+**A12 — SETTLED: `median_param` keeps `quantileExact`.**
+Exact beats cheap here, because a median that changes between two loads of unchanged data reads as a bug. §5 records the ceiling and names `quantile` as the escape hatch; P8 measures it and the number decides whether anyone ever takes it.
+
+**A13 — SETTLED: expanded tree nodes are not persisted.**
+Restoring expansion means firing every child query on page load, which turns a returning visit into a burst of ClickHouse work for a tree the user may not look at. Only the selection, metrics, sort, `pct`, the chart's metric / granularity / type, and the collapsed flag are stored (§6).
+
+**A14 — SETTLED: no dedicated benchmark task for the profile subselect.**
+P8 already runs against a ClickHouse fixture; it reports the timing and the number decides. Adding a benchmark task before any evidence of a problem is work spent on a hypothesis.
+
+## 10. Appendix A — source metric definitions
+
+The project owner supplied AppMetrica's definitions when approving this spec. The one sentence quoted verbatim, and the one that drives D4, is:
+
+> A missing value or parameter in the event during the calculation is interpreted as 0
+
+It applies to: **Sum of parameter values**, **Average parameter value**, **Median parameter value**, **Sum of parameter values per user**, and **Unique parameter values per user**. It is explicitly *not* attached to **Unique parameter values**; A11 records how this spec resolves that gap and how to reverse it.
+
+The per-metric descriptions below are the design file's own `help` strings (`EventAnalyticsScreen.dc.html`, `metricDefs`), reproduced here so the catalogue and the tooltips cannot drift apart. They are the design's wording, not AppMetrica's full documentation, which was not provided in full:
+
+| Metric | Help string |
+|---|---|
+| Events | Total number of events in the period |
+| Unique parameter values | Distinct values of the chosen parameter |
+| Sum of parameter values | Sum of the chosen numeric parameter |
+| Average parameter value | Mean of the chosen numeric parameter |
+| Median value of the parameter | Median of the chosen numeric parameter |
+| Users | Unique users who fired the event |
+| Events per user | Events divided by users |
+| % of all users | Share of all tracked users |
+| Unique parameter values per user | Distinct parameter values per user |
+| Sum of parameter values per user | Parameter sum divided by users |
