@@ -116,6 +116,11 @@ function EventAnalytics() {
     [updatePrefs],
   );
 
+  const setShowPct = useCallback(
+    (pct: boolean) => updatePrefs({ pct }),
+    [updatePrefs],
+  );
+
   const setChartCollapsed = useCallback(
     (collapsed: boolean) =>
       updatePrefs({ chart: { ...prefs.chart, collapsed } }),
@@ -154,6 +159,8 @@ function EventAnalytics() {
         metrics={prefs.metrics}
         sort={prefs.sort}
         onSortChange={setSort}
+        showPct={prefs.pct}
+        onShowPctChange={setShowPct}
         selection={selection}
       />
     </div>

@@ -58,6 +58,8 @@ export function EventTreeTable({
   metrics,
   sort: storedSort,
   onSortChange,
+  showPct,
+  onShowPctChange,
   selection,
 }: {
   input: EventAnalyticsRangeInput;
@@ -65,11 +67,13 @@ export function EventTreeTable({
   metrics: IEventAnalyticsMetric[];
   sort: TableSort;
   onSortChange: (sort: TableSort) => void;
+  /** The `%` toggle: relative shares under the absolute values. */
+  showPct: boolean;
+  onShowPctChange: (showPct: boolean) => void;
   selection: TreeSelection;
 }) {
   const trpc = useTRPC();
   const [search, setSearch] = useState('');
-  const [showPct, setShowPct] = useState(true);
   const debouncedSearch = useDebounceValue(search, SEARCH_DEBOUNCE_MS);
 
   // Every level asks for the same metrics, so the server fills `row.metrics`.
@@ -131,7 +135,7 @@ export function EventTreeTable({
               'w-8 font-mono text-[12px]',
               showPct ? 'bg-background' : 'bg-muted',
             )}
-            onClick={() => setShowPct(false)}
+            onClick={() => onShowPctChange(false)}
           >
             #
           </button>
@@ -142,7 +146,7 @@ export function EventTreeTable({
               'w-8 border-l font-mono text-[12px]',
               showPct ? 'bg-muted' : 'bg-background',
             )}
-            onClick={() => setShowPct(true)}
+            onClick={() => onShowPctChange(true)}
           >
             %
           </button>
