@@ -13,6 +13,7 @@ import {
   createDraft,
   moveMetric,
   openParam,
+  parameterOptions,
   removeMetric,
   setParam,
   toolbarLabel,
@@ -262,5 +263,24 @@ describe('catalogueGroups', () => {
       'uniq_param_user',
       'sum_param_user',
     ]);
+  });
+});
+
+describe('parameterOptions', () => {
+  const names = [
+    'name',
+    'properties.day',
+    'country',
+    'properties.level_id',
+    'properties.items[*]',
+    'profile.properties.plan',
+  ];
+
+  it('keeps event properties only, without the prefix', () => {
+    expect(parameterOptions(names, '')).toEqual(['day', 'level_id']);
+  });
+
+  it('filters by the search term, case-insensitively', () => {
+    expect(parameterOptions(names, ' LEVEL')).toEqual(['level_id']);
   });
 });

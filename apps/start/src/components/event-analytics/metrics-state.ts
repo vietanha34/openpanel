@@ -207,3 +207,19 @@ export function catalogueGroups(
   );
   return groups.filter((group) => group.items.length > 0);
 }
+
+const EVENT_PROPERTY_PREFIX = 'properties.';
+
+/**
+ * The parameter dropdown's options: every event property in the project (A6),
+ * taken from the chart property list. Profile and built-in columns are dropped
+ * because a parameter metric reads `properties['p']`, and array keys (`[*]`,
+ * `.*.`) are dropped because they name no single map entry.
+ */
+export function parameterOptions(propertyNames: string[], query: string): string[] {
+  const needle = query.trim().toLowerCase();
+  return propertyNames
+    .filter((name) => name.startsWith(EVENT_PROPERTY_PREFIX))
+    .map((name) => name.slice(EVENT_PROPERTY_PREFIX.length))
+    .filter((key) => !key.includes('*') && key.toLowerCase().includes(needle));
+}
