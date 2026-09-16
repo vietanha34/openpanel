@@ -397,23 +397,45 @@ P8 already runs against a ClickHouse fixture; it reports the timing and the numb
 
 ## 10. Appendix A — source metric definitions
 
-The project owner supplied AppMetrica's definitions when approving this spec. The one sentence quoted verbatim, and the one that drives D4, is:
+AppMetrica's definitions, supplied by the project owner, verbatim.
 
-> A missing value or parameter in the event during the calculation is interpreted as 0
+**Metrics by users**
 
-It applies to: **Sum of parameter values**, **Average parameter value**, **Median parameter value**, **Sum of parameter values per user**, and **Unique parameter values per user**. It is explicitly *not* attached to **Unique parameter values**; A11 records how this spec resolves that gap and how to reverse it.
+> Users. The number of users with the event.
+>
+> Events per user. The ratio of the number of events to the total number of app users.
+>
+> % of all users. The percentage of users with the event out of the total number of app users.
+>
+> Unique parameter values per user. The ratio of the number of unique values of the selected event parameter to the number of users with the event. A missing value or parameter in the event during the calculation is interpreted as 0.
+>
+> Sum of parameter values per user. The ratio of the sum of values of the selected event parameter to the number of users with the event. A missing value or parameter in the event during the calculation is interpreted as 0.
 
-The per-metric descriptions below are the design file's own `help` strings (`EventAnalyticsScreen.dc.html`, `metricDefs`), reproduced here so the catalogue and the tooltips cannot drift apart. They are the design's wording, not AppMetrica's full documentation, which was not provided in full:
+**Metrics by events**
 
-| Metric | Help string |
+> Events.
+>
+> Unique parameter values. The number of unique values of the selected event parameter.
+>
+> Sum of parameter values. The sum of values of the selected event parameter. A missing value or parameter in the event during the calculation is interpreted as 0.
+>
+> Average parameter value. The sum of values of the selected event parameter divided by the number of events. A missing value or parameter is interpreted as 0.
+>
+> Median parameter value. The median value of the selected event parameter. A missing value or parameter in the event during the calculation is interpreted as 0.
+
+### A.1 Two things to read carefully
+
+**The "missing is 0" sentence appears on five metrics and not on `Unique parameter values`.** That asymmetry is in the source, not a transcription slip. §3 D4 applies it to the five; A11 records why this spec extends it to the sixth anyway and how to reverse that in one expression.
+
+**`Events per user` has a different denominator in the source than in the shipped product — DO NOT silently change it.**
+
+| | Denominator |
 |---|---|
-| Events | Total number of events in the period |
-| Unique parameter values | Distinct values of the chosen parameter |
-| Sum of parameter values | Sum of the chosen numeric parameter |
-| Average parameter value | Mean of the chosen numeric parameter |
-| Median value of the parameter | Median of the chosen numeric parameter |
-| Users | Unique users who fired the event |
-| Events per user | Events divided by users |
-| % of all users | Share of all tracked users |
-| Unique parameter values per user | Distinct parameter values per user |
-| Sum of parameter values per user | Parameter sum divided by users |
+| AppMetrica definition above | *the total number of app users* |
+| Shipped in Phase 1 | users **with the event**: `row.events / row.users` (`tree-utils.ts:82`, SQL `epu: 'events / users'` at `overview.service.ts:329`) |
+
+These disagree, and the difference is large: on a node fired by a tenth of the app's users, the source definition yields a number ten times smaller. Note also that `% of all users` — *"the percentage of users with the event out of the total number of app users"* — **does** use the app-wide denominator and the shipped code already matches it (`users / totals.users`).
+
+This spec **keeps the Phase 1 behaviour** and changes nothing about `epu`. Reasons: it is a visible number users have been reading since Phase 1 shipped; changing a denominator silently is exactly the class of change that makes a dashboard untrustworthy; and `Events per user` reading "events divided by the users who fired this event" is defensible on its own terms, which is why it shipped that way.
+
+Switching to the app-wide denominator is a separate, explicitly-approved decision, not something an implementer of P1 should fold into a refactor. If it is taken, it is a one-line change in two places (the SQL sort expression and `formatEventsPerUser`) plus a note in the UI, and it must land on its own so it can be announced and reverted independently.
