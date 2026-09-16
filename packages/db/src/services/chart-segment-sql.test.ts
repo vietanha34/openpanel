@@ -5,6 +5,10 @@
  * fails here.
  */
 
+// The builders turn the date range into UTC with `new Date(...)`, which reads
+// the machine's time zone. Fix it so the snapshot is the same everywhere.
+process.env.TZ = 'UTC';
+
 import { chartSegments } from '@openpanel/constants';
 import type { IChartEvent } from '@openpanel/validation';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -34,7 +38,9 @@ const cases = Object.keys(chartSegments).flatMap((segment) =>
   (segment.startsWith('property_') ? PROPERTIES : [undefined]).flatMap(
     (property) =>
       [[], [{ id: 'country', name: 'country' }]].map((breakdowns) => ({
-        label: `${segment}${property ? ` ${property}` : ''}${breakdowns.length ? ' by country' : ''}`,
+        label: [segment, property, breakdowns.length ? 'country' : '']
+          .filter(Boolean)
+          .join('/'),
         event: {
           id: 'A',
           name: 'level_start',
@@ -56,18 +62,19 @@ afterAll(() => {
 });
 
 describe('existing chart segments compile to unchanged SQL', () => {
-  it.for(cases)('getChartSql: $label', async ({ event, breakdowns }) => {
-    expect(
-      await getChartSql({ ...base, event, breakdowns, interval: 'day' })
-    ).toMatchSnapshot();
-  });
+  // A plain loop, not it.each: parameterised titles are truncated and could
+  // collide as snapshot keys.
+  for (const { label, event, breakdowns } of cases) {
+    it(`getChartSql ${label}`, async () => {
+      expect(
+        await getChartSql({ ...base, event, breakdowns, interval: 'day' })
+      ).toMatchSnapshot();
+    });
 
-  it.for(cases)('getAggregateChartSql: $label', async ({
-    event,
-    breakdowns,
-  }) => {
-    expect(
-      await getAggregateChartSql({ ...base, event, breakdowns })
-    ).toMatchSnapshot();
-  });
+    it(`getAggregateChartSql ${label}`, async () => {
+      expect(
+        await getAggregateChartSql({ ...base, event, breakdowns })
+      ).toMatchSnapshot();
+    });
+  }
 });
