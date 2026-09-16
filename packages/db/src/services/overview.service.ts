@@ -7,6 +7,7 @@ import {
   type IEventAnalyticsListInput,
   type IEventAnalyticsListOutput,
   type IEventAnalyticsListRow,
+  type IEventAnalyticsMetric,
   type IEventAnalyticsMetricRow,
   type IEventAnalyticsParentPathItem,
   type IEventAnalyticsSortKey,
@@ -18,6 +19,7 @@ import {
   zEventAnalyticsPropertyType,
   zEventAnalyticsSortDir,
   zEventAnalyticsSortKey,
+  metricKey,
   zTimeInterval,
 } from '@openpanel/validation';
 import sqlstring from 'sqlstring';
@@ -278,6 +280,8 @@ type IEventAnalyticsRangeQuery = {
   startDate: string;
   endDate: string;
   timezone: string;
+  /** Metric columns to add. Absent means `events` and `users` only. */
+  metrics?: IEventAnalyticsMetric[];
 };
 
 export type IGetEventAnalyticsListInput = IEventAnalyticsRangeQuery &
@@ -323,21 +327,116 @@ function escapeLikeTerm(term: string) {
   return term.replace(LIKE_WILDCARD_RE, '\\$&');
 }
 
-const EVENT_ANALYTICS_SORT_COLUMN: Record<string, string> = {
-  events: 'events',
-  users: 'users',
-  epu: 'events / users',
-};
+/**
+ * The aggregate behind one metric column, or `null` when the metric needs none
+ * of its own: `events` and `users` are always selected, and `epu`, `pctu` and
+ * `epau` are ratios the renderer derives from the row and the totals.
+ *
+ * See docs/superpowers/specs/2026-09-16-event-analytics-phase2-design.md §5.
+ */
+export function eventAnalyticsMetricExpression(
+  metric: IEventAnalyticsMetric
+): string | null {
+  const param = () => {
+    if (!metric.param) {
+      throw new Error(`Metric "${metric.id}" needs a parameter`);
+    }
+    // §3 D4: in a METRIC a missing or non-numeric value counts as 0. Filters
+    // do the opposite (`toFloat64OrNull`, no fallback, so it matches nothing).
+    // Do not unify the two. `coalesce` rather than `toFloat64OrZero` so the
+    // zero reads as a decision.
+    return `coalesce(toFloat64OrNull(properties[${sqlstring.escape(metric.param)}]), 0)`;
+  };
+
+  switch (metric.id) {
+    case 'uniq_param':
+      return `uniqExact(${param()})`;
+    case 'sum_param':
+      return `sum(${param()})`;
+    // Not `avg`: the denominator is every event in the node, written out so a
+    // refactor cannot quietly narrow it to the events carrying the parameter.
+    case 'avg_param':
+      return `sum(${param()}) / count()`;
+    // Exact, so the median does not wobble between page loads.
+    case 'median_param':
+      return `quantileExact(0.5)(${param()})`;
+    case 'uniq_param_user':
+      return `uniqExact(${param()}) / uniqExact(profile_id)`;
+    case 'sum_param_user':
+      return `sum(${param()}) / uniqExact(profile_id)`;
+    default:
+      return null;
+  }
+}
 
 /**
- * `sort` widened to a string when the metric catalogue landed, so the lookup can
- * miss. The schema already rejects a key that is not one of the request's own
- * metrics, so a miss here means a metric column the SQL builder does not know
- * yet (P1 adds them) — fall back to `events` rather than emitting `undefined`
- * into the ORDER BY.
+ * Metric keys such as `sum_param:day` carry free text, so the columns are
+ * aliased by their position in the request instead.
  */
-function eventAnalyticsSortColumn(sort: IEventAnalyticsSortKey): string {
-  return EVENT_ANALYTICS_SORT_COLUMN[sort] ?? 'events';
+function eventAnalyticsMetricAlias(index: number): string {
+  return `metric_${index}`;
+}
+
+function eventAnalyticsMetricSelects(
+  metrics: IEventAnalyticsMetric[] | undefined
+): string[] {
+  return (metrics ?? []).flatMap((metric, index) => {
+    const expression = eventAnalyticsMetricExpression(metric);
+    return expression
+      ? [`${expression} AS ${eventAnalyticsMetricAlias(index)}`]
+      : [];
+  });
+}
+
+/** Reads the aliased metric columns back, keyed by `metricKey`. */
+function toEventAnalyticsMetrics(
+  row: Record<string, unknown> | undefined,
+  metrics: IEventAnalyticsMetric[] | undefined
+): Pick<IEventAnalyticsMetricRow, 'metrics'> {
+  if (!metrics) {
+    return {};
+  }
+  const values: Record<string, number> = {};
+  for (const [index, metric] of metrics.entries()) {
+    if (eventAnalyticsMetricExpression(metric)) {
+      // A per-user ratio over an empty range divides by zero users.
+      values[metricKey(metric)] = toFiniteCount(
+        row?.[eventAnalyticsMetricAlias(index)] as number | string | undefined
+      );
+    }
+  }
+  return { metrics: values };
+}
+
+/**
+ * The ORDER BY expression for a sort key. The schema already rejects a key that
+ * is not one of the request's own metrics, so the `events` fallback is only a
+ * guard against emitting `undefined` into the SQL.
+ */
+function eventAnalyticsSortColumn(
+  sort: IEventAnalyticsSortKey,
+  metrics: IEventAnalyticsMetric[] | undefined
+): string {
+  switch (sort) {
+    // `pctu` is users / totals.users and `epau` is events / totals.users. The
+    // denominator is the same for every row of one query, so sorting by the
+    // numerator gives the identical order without computing the ratio.
+    case 'events':
+    case 'epau':
+      return 'events';
+    case 'users':
+    case 'pctu':
+      return 'users';
+    case 'epu':
+      return 'events / users';
+  }
+  const index = (metrics ?? []).findIndex(
+    (metric) => metricKey(metric) === sort
+  );
+  const metric = metrics?.[index];
+  return metric && eventAnalyticsMetricExpression(metric)
+    ? eventAnalyticsMetricAlias(index)
+    : 'events';
 }
 
 export function buildEventAnalyticsListQuery({
@@ -353,10 +452,11 @@ export function buildEventAnalyticsListQuery({
       'name',
       'count() AS events',
       'uniqExact(profile_id) AS users',
+      ...eventAnalyticsMetricSelects(range.metrics),
     ])
     .groupBy(['name'])
     .orderBy(
-      eventAnalyticsSortColumn(sort),
+      eventAnalyticsSortColumn(sort, range.metrics),
       dir === 'asc' ? 'ASC' : 'DESC'
     )
     .orderBy('name', 'ASC')
@@ -379,6 +479,7 @@ export function buildEventAnalyticsTotalsQuery(
   return buildEventAnalyticsBaseQuery(input).select<IEventAnalyticsMetricRow>([
     'count() AS events',
     'uniqExact(profile_id) AS users',
+    ...eventAnalyticsMetricSelects(input.metrics),
   ]);
 }
 
@@ -398,6 +499,7 @@ export type IGetEventPropertyKeysInput = {
   parentPath: IEventAnalyticsParentPathItem[];
   cursor?: number;
   limit: number;
+  metrics?: IEventAnalyticsMetric[];
 };
 
 /** Raw ClickHouse shape of one segment below the prefix. */
@@ -407,6 +509,7 @@ type EventPropertyKeySqlRow = {
   users: string | number;
   has_nested: string | number;
   non_numeric: string | number;
+  [metric: `metric_${number}`]: string | number;
 };
 
 function assertEventPropertyDepth(
@@ -430,6 +533,7 @@ export function buildEventPropertyKeysQuery({
   parentPath,
   cursor = 0,
   limit,
+  metrics,
   ...range
 }: IGetEventPropertyKeysInput) {
   assertEventPropertyDepth(parentPath);
@@ -482,6 +586,7 @@ export function buildEventPropertyKeysQuery({
       // A key whose values are all empty therefore lands on `num` -- deliberate:
       // there is nothing to parse and nothing to sort, so the rule stays simple.
       `countIf(properties[concat(${escapedPrefix}, segment)] != '' AND toFloat64OrNull(properties[concat(${escapedPrefix}, segment)]) IS NULL) AS non_numeric`,
+      ...eventAnalyticsMetricSelects(metrics),
     ])
     .from('segments')
     .groupBy(['segment'])
@@ -494,7 +599,11 @@ export function buildEventPropertyKeysQuery({
 /** Maps the raw rows onto the shared contract, applying PA1 type inference. */
 export function toEventPropertyKeyRows(
   sqlRows: EventPropertyKeySqlRow[],
-  { cursor = 0, limit }: { cursor?: number; limit: number }
+  {
+    cursor = 0,
+    limit,
+    metrics,
+  }: { cursor?: number; limit: number; metrics?: IEventAnalyticsMetric[] }
 ): IEventPropertyKeysOutput {
   const hasMore = sqlRows.length > limit;
   const rows: IEventPropertyKeyRow[] = sqlRows
@@ -508,6 +617,7 @@ export function toEventPropertyKeyRows(
         kind: isObject ? 'obj' : 'key',
         // PA1: a leaf key is numeric only when every value parsed as a number.
         type: isObject ? 'unknown' : Number(row.non_numeric) === 0 ? 'num' : 'str',
+        ...toEventAnalyticsMetrics(row, metrics),
       };
     });
 
@@ -540,6 +650,7 @@ export type IGetEventPropertyValuesInput = z.infer<
   typeof zGetEventPropertyValuesInput
 > & {
   timezone: string;
+  metrics?: IEventAnalyticsMetric[];
 };
 
 /** ClickHouse returns the aggregates as strings. */
@@ -548,6 +659,7 @@ type EventPropertyValueQueryRow = {
   events: string | number;
   users: string | number;
   total_distinct: string | number;
+  [metric: `metric_${number}`]: string | number;
 };
 
 export function buildEventPropertyValuesQuery({
@@ -591,11 +703,15 @@ export function buildEventPropertyValuesQuery({
       'count() AS events',
       'uniqExact(profile_id) AS users',
       'total_distinct',
+      ...eventAnalyticsMetricSelects(range.metrics),
     ])
     .from('base_values')
     .crossJoin('value_totals')
     .groupBy(['value', 'total_distinct'])
-    .orderBy(eventAnalyticsSortColumn(sort), dir === 'asc' ? 'ASC' : 'DESC')
+    .orderBy(
+      eventAnalyticsSortColumn(sort, range.metrics),
+      dir === 'asc' ? 'ASC' : 'DESC'
+    )
     .orderBy(tieBreaker, 'ASC')
     // One row past the page tells us whether another page exists.
     .limit(limit + 1)
@@ -1897,6 +2013,7 @@ export class OverviewService {
         name: row.name,
         events: toFiniteCount(row.events),
         users: toFiniteCount(row.users),
+        ...toEventAnalyticsMetrics(row, input.metrics),
       })),
       nextCursor: hasNextPage ? cursor + input.limit : null,
     };
@@ -1910,6 +2027,7 @@ export class OverviewService {
     return {
       events: toFiniteCount(totals?.events),
       users: toFiniteCount(totals?.users),
+      ...toEventAnalyticsMetrics(totals, input.metrics),
     };
   }
 
@@ -1938,6 +2056,7 @@ export class OverviewService {
       value: row.value,
       events: Number(row.events),
       users: Number(row.users),
+      ...toEventAnalyticsMetrics(row, input.metrics),
     }));
 
     if (!hasMore) {
