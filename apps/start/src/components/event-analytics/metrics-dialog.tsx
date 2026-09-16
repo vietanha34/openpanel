@@ -4,6 +4,7 @@ import {
   DialogContent,
   DialogDescription,
   DialogTitle,
+  DialogTrigger,
 } from '@/components/ui/dialog';
 import { useEventProperties } from '@/hooks/use-event-properties';
 import { cn } from '@/utils/cn';
@@ -84,16 +85,17 @@ export function MetricsDialog({
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
-      <Button
-        variant="outline"
-        className={cn('gap-2', open && 'bg-foreground text-background')}
-        disabled={disabled}
-        onClick={() => setOpen(true)}
-      >
-        <Columns3Icon size={15} />
-        {toolbarLabel(metrics)}
-        <ChevronDownIcon size={14} className="opacity-60" />
-      </Button>
+      <DialogTrigger asChild>
+        <Button
+          variant="outline"
+          className={cn('gap-2', open && 'bg-foreground text-background')}
+          disabled={disabled}
+        >
+          <Columns3Icon size={15} />
+          {toolbarLabel(metrics)}
+          <ChevronDownIcon size={14} className="opacity-60" />
+        </Button>
+      </DialogTrigger>
       <DialogContent className="top-[120px] flex w-auto max-w-none translate-y-0 items-start gap-0 overflow-visible border-0 bg-transparent p-0 shadow-none sm:max-w-none md:max-h-none">
         {/* Radix unmounts the content when closed, so every open starts a
             fresh draft and Cancel needs no restore step. */}
