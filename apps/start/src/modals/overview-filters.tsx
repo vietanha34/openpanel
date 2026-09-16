@@ -37,10 +37,9 @@ export interface OverviewFiltersProps {
    * Restrict what the property picker offers. Default unchanged, so only a
    * caller that passes this is affected.
    *
-   * Event Analytics passes a list without 'profile': its queries have no
-   * profile CTE join, so a `profile.properties.*` filter is dropped when the
-   * SQL is built. Offering one there silently narrows the numbers today, and
-   * would silently widen them inside an OR group.
+   * Event Analytics passes its own list. It used to leave out 'profile' while
+   * its SQL dropped profile filters; since Phase 2 P2 (#22) they resolve
+   * through a profiles subselect and the category is offered again.
    */
   categories?: PropertiesComboboxCategory[];
 }

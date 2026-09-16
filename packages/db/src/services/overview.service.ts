@@ -320,6 +320,17 @@ function buildEventAnalyticsBaseQuery({
     );
 }
 
+/** Columns of the profiles table a `profile.<column>` filter may name. */
+const EVENT_ANALYTICS_PROFILE_COLUMNS = new Set([
+  'id',
+  'first_name',
+  'last_name',
+  'email',
+  'avatar',
+  'created_at',
+  'last_seen_at',
+]);
+
 /** ClickHouse reads `%` and `_` as ILIKE wildcards; a search term is literal. */
 const LIKE_WILDCARD_RE = /[\\%_]/g;
 
@@ -1169,11 +1180,12 @@ export class OverviewService {
    * `getEventFiltersWhereClause`, which already drops names it cannot resolve
    * on the events table.
    *
-   * `profile.properties.*` compiles to `profile.properties['key']`, which
-   * only resolves where a `profile` relation exists. Event analytics only ever
-   * filters by profile properties, so instead of the chart's profile CTE the
-   * condition is wrapped in a self-contained subselect that aliases the
-   * profiles table as `profile` (Phase 2 spec §3 D1). The per-filter SQL is
+   * `profile.properties.*` and the profiles table's own columns compile to
+   * `profile.properties['key']` / `profile.email`, which only resolve where a
+   * `profile` relation exists. Event analytics only ever filters by them, so
+   * instead of the chart's profile CTE the condition is wrapped in a
+   * self-contained subselect that aliases the profiles table as `profile`
+   * (Phase 2 spec §3 D1). The per-filter SQL is
    * therefore byte-for-byte what the chart emits — presence stays
    * `properties['k'] != ''`, never mapContains — and the clause composes
    * inside an OR group like any other condition.
@@ -1189,11 +1201,32 @@ export class OverviewService {
     filterGroup?: IFilterGroup
   ) {
     const compile = (item: IChartEventFilter) => {
-      if (item.name.startsWith('profile.properties.')) {
+      if (item.name.startsWith('profile.')) {
         if (!projectId) {
           return null;
         }
-        const clause = compileEventFilter(item, projectId, undefined, 'events');
+        // TODO: dropped on purpose until compileEventFilter handles wildcard
+        // profile keys. It emits `mapExtractKeyLike(profile.properties,
+        // 'profile.properties.x.*') = 'v'`, which ClickHouse rejects ("Array
+        // does not start with '['"), failing the whole report. The picker
+        // never offers such a key; the API accepts any name.
+        if (item.name.includes('*')) {
+          return null;
+        }
+        const field = item.name.slice('profile.'.length);
+        const isProperty = field.startsWith('properties.');
+        if (!(isProperty || EVENT_ANALYTICS_PROFILE_COLUMNS.has(field))) {
+          return null;
+        }
+        // Profile columns are not events columns, so the events scope would
+        // drop them; the sessions scope skips that check and changes nothing
+        // else for a `profile.*` name. Both resolve against the alias below.
+        const clause = compileEventFilter(
+          item,
+          projectId,
+          undefined,
+          isProperty ? 'events' : 'sessions'
+        );
         return clause
           ? `profile_id IN (SELECT id FROM ${TABLE_NAMES.profiles} AS profile FINAL WHERE project_id = ${sqlstring.escape(projectId)} AND ${clause})`
           : null;

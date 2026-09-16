@@ -135,11 +135,10 @@ function EventAnalytics() {
     <div className="col gap-4">
       <div className="row flex-wrap gap-2">
         <OverviewRange />
-        {/* No 'profile' category: event analytics queries have no profile CTE
-            join, so a profile.properties.* filter is dropped when the SQL is
-            built and the numbers narrow with no error. */}
+        {/* Profile filters resolve through a profiles subselect since Phase 2
+            P2 (#22); see the B1 plan. */}
         <OverviewFilterButton
-          categories={['event', 'group', 'cohort']}
+          categories={['event', 'profile', 'group', 'cohort']}
           enableEventsFilter
         />
         <OverviewFiltersButtons className="p-0" />

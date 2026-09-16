@@ -32,11 +32,12 @@ import {
  * keystroke in a value field. The chips below the toolbar act on the applied
  * group and remove immediately — they have no Apply of their own.
  *
- * The property picker deliberately offers no profile category: event analytics
- * queries have no profile CTE join, so a `profile.properties.*` condition is
- * dropped when the SQL is built, which would silently widen an OR group.
+ * The picker offers profile properties: since Phase 2 P2 (#22) the SQL
+ * resolves a `profile.*` condition through a self-contained profiles subselect
+ * instead of dropping it, so it narrows inside an OR group like any other
+ * condition. See docs/superpowers/plans/2026-09-17-event-analytics-b1-profile-ui.md.
  */
-const PANEL_CATEGORIES = ['event', 'group', 'cohort'] as const;
+const PANEL_CATEGORIES = ['event', 'profile', 'group', 'cohort'] as const;
 
 type Props = {
   /** The applied group. */
