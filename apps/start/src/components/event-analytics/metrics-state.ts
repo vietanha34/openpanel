@@ -19,14 +19,17 @@ import type {
 /** A parameter metric with no `param` yet is a pending chip (`Sum of …: —`). */
 export type DraftMetric = IEventAnalyticsMetric;
 
-export type MetricsDraft = {
+export interface MetricsDraft {
   /** Column order. */
   metrics: DraftMetric[];
   /** The chip whose parameter dropdown is open. */
   editing: number | null;
-};
+}
 
-export type MetricsSort = { key: string; dir: IEventAnalyticsSortDir };
+export interface MetricsSort {
+  key: string;
+  dir: IEventAnalyticsSortDir;
+}
 
 const DEFAULT_SORT: MetricsSort = { key: 'events', dir: 'desc' };
 
@@ -90,10 +93,13 @@ export function moveMetric(
   return { metrics, editing: null };
 }
 
+function isParamMetric(metric: DraftMetric | undefined): boolean {
+  return metric !== undefined && EVENT_ANALYTICS_METRICS[metric.id].param;
+}
+
 /** Clicking an existing parameter chip reopens its dropdown. */
 export function openParam(draft: MetricsDraft, index: number): MetricsDraft {
-  const metric = draft.metrics[index];
-  if (!metric || !EVENT_ANALYTICS_METRICS[metric.id].param) {
+  if (!isParamMetric(draft.metrics[index])) {
     return draft;
   }
   return { ...draft, editing: index };
@@ -109,8 +115,7 @@ export function setParam(
   index: number,
   param: string,
 ): MetricsDraft {
-  const metric = draft.metrics[index];
-  if (!metric || !EVENT_ANALYTICS_METRICS[metric.id].param) {
+  if (!isParamMetric(draft.metrics[index])) {
     return draft;
   }
   return {
@@ -177,11 +182,11 @@ export function toolbarLabel(metrics: DraftMetric[]): string {
   return `Metrics · ${EVENT_ANALYTICS_METRICS[first.id].label}${rest}`;
 }
 
-export type CatalogueItem = {
+export interface CatalogueItem {
   id: IEventAnalyticsMetricId;
   label: string;
   help: string;
-};
+}
 
 /** The catalogue panel's groups, filtered by label; empty groups are dropped. */
 export function catalogueGroups(
