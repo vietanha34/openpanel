@@ -113,14 +113,14 @@ afterAll(async () => {
   vi.restoreAllMocks();
 }, 60_000);
 
-it.each([
+it.for([
   // epu in the table, `user_average` in the chart.
   ['user_average', 2],
   // avg_param in the table: missing counts as 0, so 28 / 14 events.
   ['property_average_missing_zero', 2],
-])(
+] as const)(
   'aggregates %s into one whole-period bucket equal to the table value',
-  async (segment, tableValue, ctx) => {
+  async ([segment, tableValue], ctx) => {
     if (!chReachable) ctx.skip('ClickHouse not reachable at CLICKHOUSE_URL');
 
     const aggregate = await chQuery<{ count: number }>(
