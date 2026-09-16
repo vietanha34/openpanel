@@ -30,9 +30,9 @@ describe('childPath', () => {
 });
 
 describe('indentStyle', () => {
-  it('indents 22px per depth', () => {
-    expect(indentStyle(0)).toEqual({ paddingLeft: '0px' });
-    expect(indentStyle(3)).toEqual({ paddingLeft: '66px' });
+  it('indents 22px per depth on top of the 14px gutter', () => {
+    expect(indentStyle(0)).toEqual({ paddingLeft: '14px' });
+    expect(indentStyle(3)).toEqual({ paddingLeft: '80px' });
   });
 });
 

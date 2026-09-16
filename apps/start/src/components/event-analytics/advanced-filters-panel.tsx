@@ -105,7 +105,12 @@ export function AdvancedFiltersPanel({ value, onChange }: Props) {
           </Button>
         </PopoverTrigger>
 
-        <PopoverContent align="end" className="w-[600px] p-0">
+        {/* 600px is the design width; it shrinks with the viewport so a narrow
+            window scrolls the table instead of the whole page. */}
+        <PopoverContent
+          align="end"
+          className="w-[min(600px,calc(100vw-2rem))] p-0"
+        >
           <div className="row items-center gap-2.5 border-b p-3">
             <span className="flex-1 text-sm font-semibold">
               Advanced filters
@@ -195,9 +200,10 @@ export function AdvancedFiltersPanel({ value, onChange }: Props) {
                   >
                     {(setComboOpen) => (
                       <Button
+                        className="h-[26px] border-dashed text-highlight"
                         onClick={() => setComboOpen((prev) => !prev)}
                         size="sm"
-                        variant="ghost"
+                        variant="outline"
                       >
                         + Condition
                       </Button>
@@ -207,6 +213,10 @@ export function AdvancedFiltersPanel({ value, onChange }: Props) {
                   {/* Level 2 is the last one. The design keeps the button and
                       disables it, so the limit teaches itself. */}
                   <Button
+                    className={cn(
+                      'h-[26px] border-dashed',
+                      canAddSubGroup(card.level) && 'text-highlight',
+                    )}
                     disabled={!canAddSubGroup(card.level)}
                     onClick={() => setDraft(addSubGroup(draft))}
                     size="sm"
@@ -215,7 +225,7 @@ export function AdvancedFiltersPanel({ value, onChange }: Props) {
                         ? 'Add a nested group'
                         : 'Nesting is limited to two levels'
                     }
-                    variant="ghost"
+                    variant="outline"
                   >
                     + Nested group
                   </Button>

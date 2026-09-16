@@ -33,8 +33,19 @@ export function childPath(parentPath: string, id: string) {
   return `${parentPath}/${id}`;
 }
 
+/** The card gutter every row label starts from, before the depth step. */
+export const ROW_PADDING_PX = 14;
+
 export function indentStyle(depth: number) {
-  return { paddingLeft: `${depth * INDENT_PX}px` };
+  return { paddingLeft: `${ROW_PADDING_PX + depth * INDENT_PX}px` };
+}
+
+/**
+ * A "load more" row sits 25px past the values it extends, so the eye reads it
+ * as part of that branch rather than as another value.
+ */
+export function loadMoreIndentStyle(depth: number) {
+  return { paddingLeft: `${ROW_PADDING_PX + depth * INDENT_PX + 25}px` };
 }
 
 export function iconFor(kind: TreeNodeKind) {

@@ -97,6 +97,11 @@ export function EventAnalyticsChart({
             </ToggleGroupItem>
           ))}
         </ToggleGroup>
+        <span className="text-muted-foreground text-xs">
+          {selected.length > 0
+            ? `${selected.length} series plotted`
+            : 'no series plotted'}
+        </span>
         <div className="flex-1" />
         <ToggleGroup
           type="single"

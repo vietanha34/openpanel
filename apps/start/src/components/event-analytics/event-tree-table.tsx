@@ -6,7 +6,7 @@ import type {
   IEventAnalyticsSortDir,
 } from '@openpanel/validation';
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
-import { RotateCw, Search, SearchX } from 'lucide-react';
+import { Info, RotateCw, Search, SearchX } from 'lucide-react';
 import { useState } from 'react';
 import {
   type EventAnalyticsRangeInput,
@@ -205,7 +205,11 @@ export function EventTreeTable({
         />
       </div>
 
-      <div className="border-b bg-muted/20 px-3.5 py-2 text-[12px] text-muted-foreground">
+      {/* Padded to 40px so the note starts under the row labels, not under the
+          chevron column. */}
+      <div className="flex items-center gap-2 border-b bg-muted/20 py-2 pr-[18px] pl-10 text-[12px] text-muted-foreground">
+        <Info className="size-3.5 shrink-0" />
+        <span>
         Totals count each user once. Branches overlap — the visible event rows
         sum to{' '}
         <span className="font-mono text-foreground">
@@ -216,6 +220,7 @@ export function EventTreeTable({
           {formatCount(totals.users)}
         </span>{' '}
         unique, so child rows never add up to the totals row.
+        </span>
       </div>
 
       {listQuery.isPending ? (
