@@ -13,6 +13,7 @@ import {
   type IEventPropertyKeyRow,
   type IEventPropertyKeysOutput,
   type IEventPropertyValuesOutput,
+  type IFilterGroup,
   zEventAnalyticsParentPathItem,
   zEventAnalyticsPropertyType,
   zEventAnalyticsSortDir,
@@ -28,7 +29,9 @@ import {
   TABLE_NAMES,
 } from '../clickhouse/client';
 import { clix } from '../clickhouse/query-builder';
+import { compileFilterGroup } from './filter-group.service';
 import {
+  compileEventFilter,
   getEventFiltersWhereClause,
   getSelectPropertyKey,
 } from './chart.service';
@@ -210,20 +213,25 @@ export type IGetTopEventsInput = z.infer<typeof zGetTopEventsInput> & {
 };
 
 export const zGetEventAnalyticsInput = zGetTopEventsInput;
-export type IGetEventAnalyticsInput = z.infer<typeof zGetEventAnalyticsInput> & {
+export type IGetEventAnalyticsInput = z.infer<
+  typeof zGetEventAnalyticsInput
+> & {
   timezone: string;
+  filterGroup?: IFilterGroup;
 };
 
 export function buildEventAnalyticsQuery({
   projectId,
   filters,
+  filterGroup,
   startDate,
   endDate,
   timezone,
 }: IGetEventAnalyticsInput) {
   const where = new OverviewService(ch).getEventAnalyticsWhereClause(
     filters,
-    projectId
+    projectId,
+    filterGroup
   );
   const baseEvents = clix(ch, timezone)
     .select(['name', 'profile_id'])
@@ -265,6 +273,8 @@ export function buildEventAnalyticsQuery({
 type IEventAnalyticsRangeQuery = {
   projectId: string;
   filters: IChartEventFilter[];
+  /** Advanced filters. Wins over `filters` when present. */
+  filterGroup?: IFilterGroup;
   startDate: string;
   endDate: string;
   timezone: string;
@@ -285,6 +295,7 @@ export type IGetEventAnalyticsTotalsInput = IEventAnalyticsRangeQuery;
 function buildEventAnalyticsBaseQuery({
   projectId,
   filters,
+  filterGroup,
   startDate,
   endDate,
   timezone,
@@ -297,7 +308,11 @@ function buildEventAnalyticsBaseQuery({
       clix.datetime(endDate, 'toDateTime'),
     ])
     .rawWhere(
-      new OverviewService(ch).getEventAnalyticsWhereClause(filters, projectId)
+      new OverviewService(ch).getEventAnalyticsWhereClause(
+        filters,
+        projectId,
+        filterGroup
+      )
     );
 }
 
@@ -1037,26 +1052,42 @@ export class OverviewService {
    */
   getEventAnalyticsWhereClause(
     filters: IChartEventFilter[],
-    projectId?: string
+    projectId?: string,
+    /**
+     * Advanced filters (AND/OR groups). When absent the flat array is wrapped
+     * into an implicit AND root, so the emitted SQL is the same conditions
+     * joined by AND as before.
+     */
+    filterGroup?: IFilterGroup
   ) {
-    const where = getEventFiltersWhereClause(
-      filters.flatMap((item) => {
-        if (item.name.startsWith('profile.properties.')) {
-          return [];
-        }
-        // The events table has no top-level utm_* columns — those live in the
-        // properties map under the __query.utm_* keys.
-        if (UTM_COLUMNS.includes(item.name)) {
-          return [{ ...item, name: `properties.__query.${item.name}` }];
-        }
-        return [item];
-      }),
-      projectId,
-      undefined,
-      'events'
-    );
+    const compile = (item: IChartEventFilter) => {
+      if (item.name.startsWith('profile.properties.')) {
+        return null;
+      }
 
-    return Object.values(where).join(' AND ');
+      // The events table has no top-level utm_* columns — those live in the
+      // properties map under the __query.utm_* keys.
+      const resolved = UTM_COLUMNS.includes(item.name)
+        ? { ...item, name: `properties.__query.${item.name}` }
+        : item;
+
+      return compileEventFilter(resolved, projectId, undefined, 'events');
+    };
+
+    if (!filterGroup) {
+      // Keep the flat path byte-identical: the group walker parenthesises, the
+      // flat loop does not, and existing SQL assertions pin the flat form.
+      const where: string[] = [];
+      for (const item of filters) {
+        const clause = compile(item);
+        if (clause !== null) {
+          where.push(clause);
+        }
+      }
+      return where.join(' AND ');
+    }
+
+    return compileFilterGroup(filterGroup, compile) ?? '';
   }
 
   getRawWhereClause(type: 'events' | 'sessions', filters: IChartEventFilter[]) {
