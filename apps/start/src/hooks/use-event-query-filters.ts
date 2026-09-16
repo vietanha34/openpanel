@@ -7,7 +7,11 @@ import {
 } from 'nuqs';
 import { useCallback } from 'react';
 
-import type { IChartEventFilterOperator } from '@openpanel/validation';
+import {
+  type IChartEventFilterOperator,
+  type IFilterGroup,
+  zFilterGroup,
+} from '@openpanel/validation';
 
 const nuqsOptions = { history: 'push' } as const;
 
@@ -156,4 +160,30 @@ export const eventQueryNamesFilter = parseAsArrayOf(parseAsString).withDefault(
 
 export function useEventQueryNamesFilter(options: NuqsOptions = {}) {
   return useQueryState('events', eventQueryNamesFilter.withOptions(options));
+}
+
+/**
+ * Advanced filters (AND/OR groups) travel as one JSON query param. A value that
+ * does not validate is discarded rather than thrown: a hand-edited or truncated
+ * URL then degrades to the flat `f` filters instead of breaking the page.
+ */
+export const filterGroupParser = createParser<IFilterGroup | null>({
+  parse: (query: string) => {
+    if (!query) return null;
+
+    try {
+      const parsed = zFilterGroup.safeParse(JSON.parse(query));
+      return parsed.success ? parsed.data : null;
+    } catch {
+      return null;
+    }
+  },
+  serialize: (value) => (value ? JSON.stringify(value) : ''),
+});
+
+export function useEventQueryFilterGroup(options: NuqsOptions = {}) {
+  return useQueryState(
+    'fg',
+    filterGroupParser.withOptions({ ...nuqsOptions, ...options }),
+  );
 }

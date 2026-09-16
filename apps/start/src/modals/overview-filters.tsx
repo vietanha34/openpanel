@@ -20,7 +20,10 @@ import type {
 
 import { OriginFilter } from '@/components/overview/filters/origin-filter';
 import { OverviewAICommand } from '@/components/overview/overview-ai-command';
-import { PropertiesCombobox } from '@/components/report/sidebar/PropertiesCombobox';
+import {
+  PropertiesCombobox,
+  type PropertiesComboboxCategory,
+} from '@/components/report/sidebar/PropertiesCombobox';
 import { ComboboxEvents } from '@/components/ui/combobox-events';
 import { useAppParams } from '@/hooks/use-app-params';
 import { cn } from '@/utils/cn';
@@ -30,6 +33,16 @@ export interface OverviewFiltersProps {
   nuqsOptions?: NuqsOptions;
   enableEventsFilter?: boolean;
   mode?: 'events' | 'profile';
+  /**
+   * Restrict what the property picker offers. Default unchanged, so only a
+   * caller that passes this is affected.
+   *
+   * Event Analytics passes a list without 'profile': its queries have no
+   * profile CTE join, so a `profile.properties.*` filter is dropped when the
+   * SQL is built. Offering one there silently narrows the numbers today, and
+   * would silently widen them inside an OR group.
+   */
+  categories?: PropertiesComboboxCategory[];
 }
 
 const Seperator = () => <div className="h-px bg-border -mx-6" />
@@ -46,6 +59,7 @@ export default function OverviewFilters({
   nuqsOptions,
   enableEventsFilter,
   mode,
+  categories,
 }: OverviewFiltersProps) {
   const { projectId } = useAppParams();
   const [filters, setFilter, setFilters, removeFilter] =
@@ -155,11 +169,12 @@ export default function OverviewFilters({
         </div>
         <PropertiesCombobox
           categories={
-            mode === 'events'
+            categories ??
+            (mode === 'events'
               ? ['event']
               : mode === 'profile'
                 ? ['profile']
-                : ['event', 'profile', 'group', 'cohort']
+                : ['event', 'profile', 'group', 'cohort'])
           }
           exclude={
             enableEventsFilter

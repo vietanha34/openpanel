@@ -225,16 +225,24 @@ export function removeCondition(
   group: IFilterGroup,
   id: string,
 ): IFilterGroup {
-  const children = group.children.flatMap((child) => {
+  const children: IFilterGroup['children'] = [];
+
+  for (const child of group.children) {
     if (child.kind === 'condition') {
-      return conditionId(child) === id ? [] : [child];
+      if (conditionId(child) !== id) {
+        children.push(child);
+      }
+      continue;
     }
 
     const remaining = child.children.filter(
       (nested) => conditionId(nested) !== id,
     );
-    return remaining.length === 0 ? [] : [{ ...child, children: remaining }];
-  });
+
+    if (remaining.length > 0) {
+      children.push({ ...child, children: remaining });
+    }
+  }
 
   return { ...group, children };
 }
