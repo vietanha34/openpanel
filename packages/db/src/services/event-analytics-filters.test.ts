@@ -113,7 +113,16 @@ describe.each(Object.entries(builders))('%s property filters', (_name, build) =>
     expect(sql).not.toMatch(/(?<!\.)\butm_source\s*=/);
   });
 
-  it('drops a profile property filter that has no join to resolve it', () => {
+  // Deliberate, not an oversight: `profile.properties.plan` compiles to
+  // `profile.properties['plan']`, which only resolves in the chart queries
+  // that join the profile CTE. Event analytics has no such join, so emitting
+  // it would fail the query outright with UNKNOWN_IDENTIFIER. Dropping it is
+  // only acceptable while the UI does not offer profile properties in the
+  // Event Analytics filter picker — do NOT "fix" this into a
+  // `mapContains(profile.properties, …)` clause. Making these filters work
+  // means joining the profile CTE (or surfacing an explicit error), never
+  // widening the emitted SQL here.
+  it('drops a profile property filter on purpose — no join resolves it', () => {
     const sql = build([
       {
         id: 'profile.properties.plan',
@@ -124,6 +133,7 @@ describe.each(Object.entries(builders))('%s property filters', (_name, build) =>
     ]);
 
     expect(sql).not.toContain('profile.properties');
+    expect(sql).not.toContain("'pro'");
   });
 
   it('resolves a cohort filter through a self-contained subselect', () => {

@@ -1030,7 +1030,10 @@ export class OverviewService {
    * `profile.properties.*` is the one exception: it emits
    * `profile.properties['key']`, which only resolves in the chart queries that
    * join the profile CTE. Event analytics has no such join, so those filters
-   * are dropped instead of crashing the query.
+   * are dropped instead of crashing the query. Known limitation: dropping is
+   * only safe while the UI offers no profile properties in the Event
+   * Analytics filter picker. Once it does, join the profile CTE or surface an
+   * explicit error — never keep dropping them silently.
    */
   getEventAnalyticsWhereClause(
     filters: IChartEventFilter[],
