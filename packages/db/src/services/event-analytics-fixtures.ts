@@ -35,6 +35,21 @@
  * Row 1 carries two keys under `payload` and rows 2/3/5 carry three, so the
  * `payload` object row proves an event is counted once per object, not once
  * per key below it (naive counting would report 17 events instead of 8).
+ *
+ * ---------------------------------------------------------------------------
+ * Phase 2 additions (P8) -- additive, so every T8 number above still holds
+ * ---------------------------------------------------------------------------
+ *
+ * - `app_version` (`'1.2.3'`, never parses as a number) on one of the two
+ *   `ads_inter_shown` rows and on the `booster_use` row. The other
+ *   `ads_inter_shown` row has no `app_version` at all, so one node holds both
+ *   an unparseable value and an absent one -- which a metric must read the same
+ *   way, as 0.
+ * - A `profiles` seed, so a `profile.properties.*` filter has something to
+ *   resolve against: u1 and u2 are on `plan = pro`, the rest on `free`.
+ *
+ * The missing-parameter case needs no new row: `payload.lives_left` already
+ * sits on 4 of the 8 `level_start` events.
  */
 
 import { TABLE_NAMES, ch } from '../clickhouse/client';
@@ -69,6 +84,65 @@ export const EVENT_ANALYTICS_BLUEPRINT = {
   totals: { events: 14, users: 5 },
   /** What a broken totals query summing the branches would return. */
   summedBranchUsers: 9,
+
+  /**
+   * Phase 2 metrics (spec 2026-09-16 §5) over `level_start`, parameter
+   * `payload.lives_left`. Four of the eight events do not carry it, and §3 D4
+   * says a metric reads that as 0 -- the opposite of what a filter does.
+   *
+   * Coalesced value set: [5, 0, 3, 0, 5, 0, 5, 0]
+   */
+  livesLeftOnLevelStart: {
+    events: 8,
+    users: 4,
+    sum_param: 18, // 5 + 3 + 5 + 5
+    // 18/8, NOT 18/4: the denominator is every event in the node.
+    avg_param: 2.25,
+    // quantileExact over [0,0,0,0,3,5,5,5]. ClickHouse takes the element at
+    // floor(n/2), so an even-sized set resolves to the upper middle value.
+    median_param: 3,
+    // {0, 3, 5}: without the four missing events this would be 2.
+    uniq_param: 3,
+    sum_param_user: 4.5, // 18/4
+    uniq_param_user: 0.75, // 3/4
+  },
+
+  /**
+   * The same parameter narrowed to `level_mode = hard`, where every event does
+   * carry it. `uniq_param` drops from 3 to 2 because no zero joins the set.
+   */
+  livesLeftUnderHard: {
+    events: 4,
+    users: 4,
+    sum_param: 18,
+    avg_param: 4.5,
+    median_param: 5,
+    uniq_param: 2, // {3, 5}
+    sum_param_user: 4.5,
+    uniq_param_user: 0.5,
+  },
+
+  /**
+   * `level_id` summed per event. Only `level_start` carries the parameter, so
+   * sorting by `sum_param:level_id` is a different order from `events desc`.
+   */
+  levelIdSumByEvent: {
+    level_start: 48, // 10+2+2+10+9+10+2+3
+    level_finish: 0,
+    ads_inter_shown: 0,
+    booster_use: 0,
+  },
+
+  /** `level_id` across all 14 events, for the totals row. */
+  levelIdTotals: {
+    sum_param: 48,
+    avg_param: 48 / 14,
+    // [0,0,0,0,0,0,2,2,2,3,9,10,10,10] -> element at index 7
+    median_param: 2,
+    uniq_param: 5, // {0, 2, 3, 9, 10}
+    sum_param_user: 9.6, // 48/5
+    uniq_param_user: 1, // 5/5
+  },
 } as const;
 
 type FixtureEvent = {
@@ -178,14 +252,33 @@ const FIXTURE_EVENTS: FixtureEvent[] = [
   {
     user: users.u5,
     name: 'ads_inter_shown',
-    properties: { placement: 'level_end' },
+    // `app_version` never parses as a number, so every metric over it sees 0.
+    properties: { placement: 'level_end', app_version: '1.2.3' },
   },
   {
     user: users.u2,
     name: 'ads_inter_shown',
+    // Deliberately missing `app_version`: a metric reads that as 0 too, which
+    // is how a non-numeric parameter and an absent one become indistinguishable.
     properties: { placement: 'menu_return' },
   },
-  { user: users.u3, name: 'booster_use', properties: { booster_id: 'hammer' } },
+  {
+    user: users.u3,
+    name: 'booster_use',
+    properties: { booster_id: 'hammer', app_version: '1.2.3' },
+  },
+];
+
+/**
+ * Profiles backing the `profile.properties.*` filter subselect (Phase 2 D1).
+ * u1 and u2 are on `pro`, everyone else on `free`.
+ */
+const FIXTURE_PROFILES: { user: string; plan: string }[] = [
+  { user: users.u1, plan: 'pro' },
+  { user: users.u2, plan: 'pro' },
+  { user: users.u3, plan: 'free' },
+  { user: users.u4, plan: 'free' },
+  { user: users.u5, plan: 'free' },
 ];
 
 function buildEvents(projectId: string) {
@@ -221,6 +314,22 @@ function buildEvents(projectId: string) {
   }));
 }
 
+function buildProfiles(projectId: string) {
+  return FIXTURE_PROFILES.map(({ user, plan }) => ({
+    id: user,
+    is_external: true,
+    first_name: '',
+    last_name: '',
+    email: '',
+    avatar: '',
+    properties: { plan },
+    project_id: projectId,
+    groups: [],
+    created_at: '2024-03-04 00:00:00.000',
+    last_seen_at: '2024-03-04 12:00:00.000',
+  }));
+}
+
 export async function setupEventAnalyticsFixtures(
   projectId: string
 ): Promise<void> {
@@ -230,16 +339,23 @@ export async function setupEventAnalyticsFixtures(
     values: buildEvents(projectId),
     format: 'JSONEachRow',
   });
+  await ch.insert({
+    table: TABLE_NAMES.profiles,
+    values: buildProfiles(projectId),
+    format: 'JSONEachRow',
+  });
 }
 
 export async function teardownEventAnalyticsFixtures(
   projectId: string
 ): Promise<void> {
-  await ch.command({
-    query: `DELETE FROM ${TABLE_NAMES.events} WHERE project_id = {projectId:String}`,
-    query_params: { projectId },
-    // Without this the lightweight delete is asynchronous and the next insert
-    // can race the cleanup, leaving doubled rows behind.
-    clickhouse_settings: { mutations_sync: '2' },
-  });
+  for (const table of [TABLE_NAMES.events, TABLE_NAMES.profiles]) {
+    await ch.command({
+      query: `DELETE FROM ${table} WHERE project_id = {projectId:String}`,
+      query_params: { projectId },
+      // Without this the lightweight delete is asynchronous and the next insert
+      // can race the cleanup, leaving doubled rows behind.
+      clickhouse_settings: { mutations_sync: '2' },
+    });
+  }
 }
