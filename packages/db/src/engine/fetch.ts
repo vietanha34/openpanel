@@ -1,10 +1,33 @@
 import type { ISerieDataItem } from '@openpanel/common';
 import { groupByLabels } from '@openpanel/common';
 import { alphabetIds } from '@openpanel/constants';
-import type { IGetChartDataInput } from '@openpanel/validation';
+import type {
+  IChartEventItem,
+  IGetChartDataInput,
+} from '@openpanel/validation';
 import { chQuery } from '../clickhouse/client';
 import { getChartSql } from '../services/chart.service';
 import type { ConcreteSeries, Plan } from './types';
+
+/**
+ * The event half of a chart query, as the SQL builders read it. One place, so
+ * the three builders in this engine cannot drift apart when a field is added —
+ * listing the fields by hand is how `filterGroup` was silently dropped before
+ * B7, leaving the Event Analytics chart blind to the table's filter group.
+ */
+export function toChartQueryEvent(
+  event: Omit<Extract<IChartEventItem, { type: 'event' }>, 'type'>,
+): IGetChartDataInput['event'] {
+  return {
+    id: event.id,
+    name: event.name,
+    segment: event.segment,
+    filters: event.filters,
+    filterGroup: event.filterGroup,
+    displayName: event.displayName,
+    property: event.property,
+  };
+}
 
 /**
  * Fetch data for all event series in the plan
@@ -35,14 +58,7 @@ export async function fetch(plan: Plan): Promise<ConcreteSeries[]> {
 
     // Build query input
     const queryInput: IGetChartDataInput = {
-      event: {
-        id: event.id,
-        name: event.name,
-        segment: event.segment,
-        filters: event.filters,
-        displayName: event.displayName,
-        property: event.property,
-      },
+      event: toChartQueryEvent(event),
       projectId: plan.input.projectId,
       startDate: plan.input.startDate,
       endDate: plan.input.endDate,

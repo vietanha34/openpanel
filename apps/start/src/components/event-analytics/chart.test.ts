@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
-import type { IEventAnalyticsMetric } from '@openpanel/validation';
+import type {
+  IEventAnalyticsMetric,
+  IFilterGroup,
+} from '@openpanel/validation';
 
 import {
   buildEventAnalyticsChartInput,
@@ -20,6 +23,55 @@ const base = {
 };
 
 describe('buildEventAnalyticsChartInput', () => {
+  const selected = [
+    { path: '/level_start', color: '#2563EB' },
+    { path: '/level_end', color: '#ff7557' },
+  ];
+
+  it('sends the advanced filter group on every series (B7)', () => {
+    const filterGroup: IFilterGroup = {
+      kind: 'group',
+      op: 'or',
+      children: [
+        {
+          kind: 'condition',
+          filter: { name: 'properties.level_mode', operator: 'hasProperty', value: [] },
+        },
+        {
+          kind: 'condition',
+          filter: { name: 'country', operator: 'is', value: ['SE'] },
+        },
+      ],
+    };
+
+    const { series } = buildEventAnalyticsChartInput({
+      ...base,
+      filterGroup,
+      selected,
+    });
+
+    expect(series).toHaveLength(2);
+    for (const serie of series) {
+      expect(serie.filterGroup).toEqual(filterGroup);
+    }
+  });
+
+  it('sends flat filters as a group too, so the chart compiles them exactly as the table', () => {
+    const filters = [
+      { name: 'profile.properties.plan', operator: 'missingProperty' as const, value: [] },
+    ];
+
+    const [serie] = buildEventAnalyticsChartInput({ ...base, filters, selected }).series;
+
+    expect(serie?.filterGroup).toEqual({
+      kind: 'group',
+      op: 'and',
+      children: [{ kind: 'condition', filter: filters[0] }],
+    });
+    // Kept for any reader of the flat field; the group wins on the server.
+    expect(serie?.filters).toEqual(filters);
+  });
+
   it('keeps custom dates next to the range (R4)', () => {
     const input = buildEventAnalyticsChartInput({
       ...base,

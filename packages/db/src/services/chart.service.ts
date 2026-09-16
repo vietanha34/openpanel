@@ -2,6 +2,7 @@
 import { stripLeadingAndTrailingSlashes } from '@openpanel/common';
 import {
   type CohortDefinition,
+  flattenConditions,
   getCohortIds,
   type IChartBreakdown,
   type IChartEventFilter,
@@ -10,6 +11,7 @@ import {
 } from '@openpanel/validation';
 import sqlstring from 'sqlstring';
 import { formatClickhouseDate, TABLE_NAMES } from '../clickhouse/client';
+import { getFilterGroupWhere } from './filter-group.service';
 import { db } from '../prisma-client';
 import { createSqlBuilder } from '../sql-builder';
 import { buildTypedClause, hasTypedCast, isTypedOperator } from './filter-cast';
@@ -526,8 +528,27 @@ export async function getChartSql({
   const cohortIds = collectBreakdownCohortIds(breakdowns);
   const cohortMetadata = await fetchCohortsMetadata(cohortIds);
 
+  // Event Analytics sends its AND/OR filter group; every other caller sends
+  // the flat array only, which keeps its SQL byte-identical. With a group,
+  // `profile.*` conditions compile to their own subselect (see
+  // compileEventAnalyticsFilter), so they must NOT reach the profile join or
+  // its key narrowing below.
+  //
+  // ponytail: rewriteProfilePropertyRefs rewrites every `profile.properties['k']`
+  // in the finished SQL, subselects included. A group condition on a profile
+  // key that a breakdown or metric ALSO reads would be rewritten to the CTE's
+  // scalar alias inside the subselect and fail loudly (ClickHouse code 48).
+  // The Event Analytics chart never breaks down or measures by a profile
+  // property; protect the group clause from the rewrite if a caller ever does.
+  const filterGroup = event.filterGroup;
+  const scopeFilters = filterGroup
+    ? flattenConditions(filterGroup).filter(
+        (filter) => !filter.name.startsWith('profile.'),
+      )
+    : event.filters;
+
   const profileProps = collectProfilePropertyKeys([
-    ...event.filters,
+    ...scopeFilters,
     ...breakdowns,
     // Math metrics (property_sum/avg/min/max) reference event.property too —
     // missing it here would strip the Map the metric still reads from.
@@ -551,7 +572,11 @@ export async function getChartSql({
       `LEFT ANY JOIN ${getCohortCteName(cohortId)} AS ${getCohortAlias(cohortId)} ON ${getCohortAlias(cohortId)}.profile_id = e.profile_id`;
   }
 
-  sb.where = getEventFiltersWhereClause(event.filters, projectId, 'e');
+  sb.where = filterGroup
+    ? getFilterGroupWhere(filterGroup, (filter) =>
+        compileEventAnalyticsFilter(filter, projectId, 'e'),
+      )
+    : getEventFiltersWhereClause(event.filters, projectId, 'e');
   sb.where.projectId = `project_id = ${sqlstring.escape(projectId)}`;
 
   if (event.name !== '*') {
@@ -561,7 +586,7 @@ export async function getChartSql({
     sb.select.label_0 = `'*' as label_0`;
   }
 
-  const anyFilterOnProfile = event.filters.some((filter) =>
+  const anyFilterOnProfile = scopeFilters.some((filter) =>
     filter.name.startsWith('profile.')
   );
   const anyBreakdownOnProfile = breakdowns.some((breakdown) =>
@@ -571,7 +596,7 @@ export async function getChartSql({
   // too — the join must exist for the metric alone, not only for filters
   // and breakdowns.
   const anyMetricOnProfile = !!event.property?.startsWith('profile.');
-  const anyFilterOnGroup = event.filters.some((filter) =>
+  const anyFilterOnGroup = scopeFilters.some((filter) =>
     filter.name.startsWith('group.')
   );
   const anyBreakdownOnGroup = breakdowns.some((breakdown) =>
@@ -602,7 +627,7 @@ export async function getChartSql({
     fields.add('id');
 
     // Collect from filters
-    event.filters
+    scopeFilters
       .filter((f) => f.name.startsWith('profile.'))
       .forEach((f) => {
         const fieldName = f.name.replace('profile.', '').split('.')[0];
@@ -916,8 +941,27 @@ export async function getAggregateChartSql({
   const cohortIds = collectBreakdownCohortIds(breakdowns);
   const cohortMetadata = await fetchCohortsMetadata(cohortIds);
 
+  // Event Analytics sends its AND/OR filter group; every other caller sends
+  // the flat array only, which keeps its SQL byte-identical. With a group,
+  // `profile.*` conditions compile to their own subselect (see
+  // compileEventAnalyticsFilter), so they must NOT reach the profile join or
+  // its key narrowing below.
+  //
+  // ponytail: rewriteProfilePropertyRefs rewrites every `profile.properties['k']`
+  // in the finished SQL, subselects included. A group condition on a profile
+  // key that a breakdown or metric ALSO reads would be rewritten to the CTE's
+  // scalar alias inside the subselect and fail loudly (ClickHouse code 48).
+  // The Event Analytics chart never breaks down or measures by a profile
+  // property; protect the group clause from the rewrite if a caller ever does.
+  const filterGroup = event.filterGroup;
+  const scopeFilters = filterGroup
+    ? flattenConditions(filterGroup).filter(
+        (filter) => !filter.name.startsWith('profile.'),
+      )
+    : event.filters;
+
   const profileProps = collectProfilePropertyKeys([
-    ...event.filters,
+    ...scopeFilters,
     ...breakdowns,
     // Math metrics (property_sum/avg/min/max) reference event.property too —
     // missing it here would strip the Map the metric still reads from.
@@ -941,7 +985,11 @@ export async function getAggregateChartSql({
       `LEFT ANY JOIN ${getCohortCteName(cohortId)} AS ${getCohortAlias(cohortId)} ON ${getCohortAlias(cohortId)}.profile_id = e.profile_id`;
   }
 
-  sb.where = getEventFiltersWhereClause(event.filters, projectId, 'e');
+  sb.where = filterGroup
+    ? getFilterGroupWhere(filterGroup, (filter) =>
+        compileEventAnalyticsFilter(filter, projectId, 'e'),
+      )
+    : getEventFiltersWhereClause(event.filters, projectId, 'e');
   sb.where.projectId = `project_id = ${sqlstring.escape(projectId)}`;
 
   if (event.name !== '*') {
@@ -951,7 +999,7 @@ export async function getAggregateChartSql({
     sb.select.label_0 = `'*' as label_0`;
   }
 
-  const anyFilterOnProfile = event.filters.some((filter) =>
+  const anyFilterOnProfile = scopeFilters.some((filter) =>
     filter.name.startsWith('profile.')
   );
   const anyBreakdownOnProfile = breakdowns.some((breakdown) =>
@@ -961,7 +1009,7 @@ export async function getAggregateChartSql({
   // too — the join must exist for the metric alone, not only for filters
   // and breakdowns.
   const anyMetricOnProfile = !!event.property?.startsWith('profile.');
-  const anyFilterOnGroup = event.filters.some((filter) =>
+  const anyFilterOnGroup = scopeFilters.some((filter) =>
     filter.name.startsWith('group.')
   );
   const anyBreakdownOnGroup = breakdowns.some((breakdown) =>
@@ -991,7 +1039,7 @@ export async function getAggregateChartSql({
     fields.add('id');
 
     // Collect from filters
-    event.filters
+    scopeFilters
       .filter((f) => f.name.startsWith('profile.'))
       .forEach((f) => {
         const fieldName = f.name.replace('profile.', '').split('.')[0];
@@ -1852,6 +1900,79 @@ export function compileEventFilter(
     }
 
   return clause;
+}
+
+// Columns that exist on the sessions table but not on events — on events
+// they're stored inside the properties map under __query.utm_*.
+export const UTM_COLUMNS = [
+  'utm_source',
+  'utm_medium',
+  'utm_campaign',
+  'utm_term',
+  'utm_content',
+];
+
+/** Columns of the profiles table a `profile.<column>` filter may name. */
+const EVENT_ANALYTICS_PROFILE_COLUMNS = new Set([
+  'id',
+  'first_name',
+  'last_name',
+  'email',
+  'avatar',
+  'created_at',
+  'last_seen_at',
+]);
+
+/**
+ * One Event Analytics filter condition, compiled the way BOTH the Event
+ * Analytics table and its chart apply it. Shared so the two can never disagree
+ * about which events a filter keeps.
+ *
+ * `profile.*` conditions become a self-contained subselect over the profiles
+ * table rather than a reference through the chart's `profile` join (Phase 2
+ * spec §3 D1). The two are not equivalent: through a LEFT ANY JOIN an event
+ * whose profile has no row reads every profile column as '', so it satisfies
+ * `missingProperty` or `isNot`, while the subselect excludes it. Presence stays
+ * `properties['k'] != ''`, never mapContains.
+ *
+ * `eventsAlias` qualifies the events table's own columns; the chart aliases
+ * events as `e` because other joined tables also carry a `properties` column.
+ */
+export function compileEventAnalyticsFilter(
+  item: IChartEventFilter,
+  projectId: string | undefined,
+  eventsAlias?: string,
+): string | null {
+  if (item.name.startsWith('profile.')) {
+    if (!projectId) {
+      return null;
+    }
+    const field = item.name.slice('profile.'.length);
+    const isProperty = field.startsWith('properties.');
+    if (!(isProperty || EVENT_ANALYTICS_PROFILE_COLUMNS.has(field))) {
+      return null;
+    }
+    // Profile columns are not events columns, so the events scope would
+    // drop them; the sessions scope skips that check and changes nothing
+    // else for a `profile.*` name. Both resolve against the alias below.
+    const clause = compileEventFilter(
+      item,
+      projectId,
+      undefined,
+      isProperty ? 'events' : 'sessions',
+    );
+    return clause
+      ? `profile_id IN (SELECT id FROM ${TABLE_NAMES.profiles} AS profile FINAL WHERE project_id = ${sqlstring.escape(projectId)} AND ${clause})`
+      : null;
+  }
+
+  // The events table has no top-level utm_* columns — those live in the
+  // properties map under the __query.utm_* keys.
+  const resolved = UTM_COLUMNS.includes(item.name)
+    ? { ...item, name: `properties.__query.${item.name}` }
+    : item;
+
+  return compileEventFilter(resolved, projectId, eventsAlias, 'events');
 }
 
 export function getEventFiltersWhereClause(

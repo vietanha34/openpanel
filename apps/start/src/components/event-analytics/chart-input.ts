@@ -7,9 +7,11 @@ import {
   type IChartType,
   type IEventAnalyticsMetric,
   type IEventAnalyticsMetricId,
+  type IFilterGroup,
   type IInterval,
   type IReportInput,
   metricKey,
+  resolveFilterGroup,
 } from '@openpanel/validation';
 
 /**
@@ -98,6 +100,8 @@ type BuildChartInputArgs = {
   startDate?: string | null;
   endDate?: string | null;
   filters: IChartEventFilter[];
+  /** The table's advanced filter group, when one is applied. */
+  filterGroup?: IFilterGroup;
   selected: EventAnalyticsSelection[];
   metric: IEventAnalyticsMetric;
   granularity: EventAnalyticsChartGranularity;
@@ -120,6 +124,7 @@ export function buildEventAnalyticsChartInput({
   startDate,
   endDate,
   filters,
+  filterGroup,
   selected,
   metric,
   granularity,
@@ -144,12 +149,20 @@ export function buildEventAnalyticsChartInput({
     }
   }
 
+  // Always a group, even for flat filters: the server compiles a group with
+  // the same per-condition SQL as the Event Analytics table
+  // (compileEventAnalyticsFilter). The flat path goes through the chart's
+  // profile join instead, where an event with no profile row satisfies
+  // `missingProperty` / `isNot` and the chart drifts from the table.
+  const resolvedGroup = resolveFilterGroup(filters, filterGroup);
+
   const series: EventSerie[] = events.map((event) => ({
     id: event,
     name: event,
     displayName: event,
     ...segment,
     filters,
+    filterGroup: resolvedGroup,
     type: 'event',
   }));
 

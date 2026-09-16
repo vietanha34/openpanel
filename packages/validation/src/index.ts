@@ -14,6 +14,7 @@ import {
   zChartEventFilter,
   zRange,
 } from './chart-primitives';
+import { zFilterGroup } from './filter-group';
 
 export * from './chart-primitives';
 export * from './filter-group';
@@ -75,6 +76,11 @@ export const zChartEvent = z.object({
     .array(zChartEventFilter)
     .default([])
     .describe('Filters applied specifically to this event'),
+  filterGroup: zFilterGroup
+    .optional()
+    .describe(
+      'AND/OR filter group. Wins over `filters` when present; sent by the Event Analytics chart so it filters exactly as its table does',
+    ),
 });
 
 export const zChartFormula = z.object({
