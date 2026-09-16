@@ -158,6 +158,7 @@ Catalogue metadata, copied verbatim from the design's `metricDefs` / `metricGrou
 | `median_param` | Median value of the parameter | events | yes | no | no |
 | `users` | Users | users | no | no | no |
 | `epu` | Events per user | users | no | no | no |
+| `epau` | Events per app user | users | no | no | no |
 | `pctu` | % of all users | users | no | no | no |
 | `uniq_param_user` | Unique parameter values per user | users | yes | no | no |
 | `sum_param_user` | Sum of parameter values per user | users | yes | no | no |
@@ -228,7 +229,8 @@ All of these are additional aggregate expressions in the **same** `GROUP BY` the
 |---|---|
 | `events` | `count()` |
 | `users` | `uniqExact(profile_id)` |
-| `epu` | derived client-side: `events / users`, `0` when `users = 0` |
+| `epu` | derived client-side: `events / users`, `0` when `users = 0` — the node's own users |
+| `epau` | derived client-side: `events / totals.users`, `0` when `totals.users = 0` — every tracked user |
 | `pctu` | derived client-side: `users / totals.users`, `0` when `totals.users = 0` |
 | `uniq_param` | `uniqExact(coalesce(toFloat64OrNull(properties['p']), 0))` — see A11 |
 | `sum_param` | `sum(coalesce(toFloat64OrNull(properties['p']), 0))` |
@@ -241,7 +243,9 @@ Notes that are easy to get wrong:
 
 - **`avg_param` is written as `sum(...) / count()`, not as `avg(...)`.** ClickHouse's `avg` over a nullable expression divides by the count of non-NULL rows, which is precisely the behaviour D4 forbids. Writing the division out makes the denominator explicit and impossible to lose in a refactor. `coalesce(..., 0)` plus `avg` would also work, but the explicit form documents the intent at the call site.
 - `quantileExact`, not `quantile`: the approximate form would make the median wobble between page loads on the same data, and the median was chosen precisely because it resists outliers. Known ceiling: `quantileExact` holds every value of the group in memory, making this the most expensive metric in the catalogue. If P8 measures it as too slow on the fixture, the escape hatch is `quantile` — a one-expression change, at the cost of a number that drifts slightly between runs.
-- The two `per user` metrics divide by the group's own `uniqExact(profile_id)`, not by the report total. A group that exists has at least one event and therefore at least one `profile_id`, so division by zero cannot occur there; the **totals row** divides by the deduplicated total and must guard it.
+- **`epau`'s denominator is query-level, not node-level.** `totals.users` comes from the totals query, not from the row, exactly as `pctu` already does: the table fetches `eventAnalyticsTotals` once and every row divides by the same number. So `epau` is computed in the same place `pctu` is — in the renderer, from the totals response — and the SQL builders emit nothing for it. An implementer who tries to compute it inside the per-node `GROUP BY` will get the node's own users back and silently reproduce `epu`.
+- **Sorting by `epau` is sorting by `events`.** The denominator is constant within a query, so the two orderings are identical and the cheaper column wins. Map it the way `pctu` maps to `users`, and leave the comment saying why — this is the second instance of the same trick and the next reader should find it explained.
+- The two `per user` parameter metrics divide by the group's own `uniqExact(profile_id)`, not by the report total. A group that exists has at least one event and therefore at least one `profile_id`, so division by zero cannot occur there; the **totals row** divides by the deduplicated total and must guard it.
 - `coalesce(toFloat64OrNull(x), 0)` is used rather than `toFloat64OrZero(x)` even though they agree here. The nested form names the decision — "parse, and if that fails, deliberately use zero" — where the bare `toFloat64OrZero` is exactly the call T6 removed from the filter path, and a grep for it should keep returning nothing.
 - Parameter keys reach SQL through the existing property-key escaping (`sqlstring.escape`), never by interpolation. `property-key-escaping.test.ts` covers the helper; the new expressions must use it.
 
@@ -325,7 +329,7 @@ Common preamble:
 > Implement §4 exactly in `packages/validation/src/event-analytics.ts`: the metric id enum, the exported catalogue with label / group / param / additive / locked per §4.1, `metricKey` per §4.2, `metrics` on the range schema with the `superRefine` rules in §4.3, `metrics?: Record<string, number>` on `IEventAnalyticsMetricRow`, and `sort` widened to a string validated against the request's own metrics plus `events` / `users` / `epu`. Also add the preferences schema from §6. Tests must cover every rejection listed in the Wave 0 task. Change no other package.
 
 **P1:**
-> In `packages/db/src/services/overview.service.ts`, build the per-metric aggregate expressions of §5 from `input.metrics` and add them to the SELECT of all four event analytics builders, returning them under `metrics` keyed by `metricKey`. Extend `EVENT_ANALYTICS_SORT_COLUMN` into a function that maps any requested metric key to its SQL expression, with `pctu` mapping to the `users` column. Escape parameter keys with the existing helper — never interpolate. When `metrics` is absent the emitted SQL must be byte-identical to today; add a test asserting that. Cover each metric's expression, and cover §3 D4's semantics explicitly: an event whose parameter is missing **must** pull `avg_param` down (the denominator is `count()`, every event in the node) and **must** contribute a `0` to the distinct set of `uniq_param` and `uniq_param_user`. Assert that no metric expression uses bare `toFloat64OrZero` and that no filter expression gained a `coalesce` — the two contexts stay opposite on purpose.
+> In `packages/db/src/services/overview.service.ts`, build the per-metric aggregate expressions of §5 from `input.metrics` and add them to the SELECT of all four event analytics builders, returning them under `metrics` keyed by `metricKey`. Extend `EVENT_ANALYTICS_SORT_COLUMN` into a function that maps any requested metric key to its SQL expression, with `pctu` mapping to the `users` column and `epau` mapping to the `events` column — both denominators are constant within a query, so the orderings are identical; leave the comment saying so. `epu`, `pctu` and `epau` are derived in the renderer and emit no aggregate of their own. Escape parameter keys with the existing helper — never interpolate. When `metrics` is absent the emitted SQL must be byte-identical to today; add a test asserting that. Cover each metric's expression, and cover §3 D4's semantics explicitly: an event whose parameter is missing **must** pull `avg_param` down (the denominator is `count()`, every event in the node) and **must** contribute a `0` to the distinct set of `uniq_param` and `uniq_param_user`. Assert that no metric expression uses bare `toFloat64OrZero` and that no filter expression gained a `coalesce` — the two contexts stay opposite on purpose.
 
 **P2:**
 > In `getEventAnalyticsWhereClause`, replace the branch that returns `null` for `profile.properties.*` with a self-contained subselect: `profile_id IN (SELECT id FROM profiles FINAL WHERE project_id = <escaped> AND <clause>)`, where `<clause>` is compiled by the same per-filter logic against the profiles table. Do NOT build a profile CTE and do NOT touch `chart.service.ts` — see §3 D1 for why. Presence stays `properties['k'] != ''`; assert in a test that no generated SQL contains `mapContains`. Rewrite the test in `event-analytics-filters.test.ts` that currently pins the dropping behaviour, and add one proving a profile filter inside an OR group narrows rather than widens.
@@ -340,13 +344,13 @@ Common preamble:
 > Build the Metrics dialog from design states `2a` and `2b` in `apps/start/src/components/event-analytics/metrics-dialog.tsx`, with all reducer-style logic in a pure `metrics-state.ts` beside it (tested; `apps/start` has no React test setup). Behaviour: chip frame listing the draft metrics in column order, grip to reorder, `x` to remove, `Events` locked with no remove button; a `+` tile that opens the 458px catalogue panel to the right, searchable, two groups titled `Metrics by events` and `Metrics by users`, a check on chosen metrics; choosing a parameter metric appends a pending chip and opens the 212px parameter dropdown under the chip frame, and clicking an existing parameter chip reopens it to change the parameter; `Apply` commits, `Cancel` restores; the counter reads `<n> of 10 metrics selected` and the `+` tile dims at 10. The toolbar button reads `Metrics · <first label>, +<n-1>`.
 
 **P6:**
-> Render one table column per chosen metric (design state `2c`): headers from the catalogue labels, uppercase, allowed to wrap; column width `158px`, or `132px` when more than four metrics are shown; cells read `row.metrics[key]` with `events` and `users` still read from their own fields; the totals row shows each metric from the totals response and never sums branches for a non-additive metric; every column header sorts, sending its metric key as `sort`. Keep the existing formatting helpers.
+> Render one table column per chosen metric (design state `2c`): headers from the catalogue labels, uppercase, allowed to wrap; column width `158px`, or `132px` when more than four metrics are shown; cells read `row.metrics[key]` with `events` and `users` still read from their own fields, and `epu`, `pctu` and `epau` derived in the renderer (`epu` from the row's own users, `pctu` and `epau` from the totals response); the totals row shows each metric from the totals response and never sums branches for a non-additive metric; every column header sorts, sending its metric key as `sort`. Keep the existing formatting helpers.
 
 **P7:**
 > Make the chart follow the chosen metrics: the metric select lists exactly the metrics in the current set (labels from the catalogue) instead of the fixed three, and the plotted series uses the selected metric key.
 
 **P8:**
-> Extend the event analytics ClickHouse fixture with a numeric parameter, a non-numeric parameter, and events missing the parameter entirely. Assert every metric of §5 against hand-computed values, under §3 D4's semantics: a missing parameter **lowers** `avg_param`, **is counted as `0`** in `median_param`'s value set, and **adds `0`** to the distinct set of `uniq_param` / `uniq_param_user`. Also assert that `users` in the totals row is less than the sum of the branch `users` when users overlap. Time `median_param` on the fixture and report the number — `quantileExact` is the catalogue's most expensive metric and §5 records `quantile` as its escape hatch.
+> Extend the event analytics ClickHouse fixture with a numeric parameter, a non-numeric parameter, and events missing the parameter entirely. Assert every metric of §5 against hand-computed values, under §3 D4's semantics: a missing parameter **lowers** `avg_param`, **is counted as `0`** in `median_param`'s value set, and **adds `0`** to the distinct set of `uniq_param` / `uniq_param_user`. Also assert that `users` in the totals row is less than the sum of the branch `users` when users overlap, and that `epu` and `epau` differ on a node fired by a subset of the app's users — `epu` divides by that node's users, `epau` by every tracked user. Time `median_param` on the fixture and report the number — `quantileExact` is the catalogue's most expensive metric and §5 records `quantile` as its escape hatch.
 
 **P9:**
 > Run the dashboard and compare the Events › Analytics tab against `render_preview` of states `2a`, `2b`, `2c` and `2d`. Fix gaps inside `apps/start/src/components/event-analytics/`. Report screenshots.
@@ -427,15 +431,24 @@ AppMetrica's definitions, supplied by the project owner, verbatim.
 
 **The "missing is 0" sentence appears on five metrics and not on `Unique parameter values`.** That asymmetry is in the source, not a transcription slip. §3 D4 applies it to the five; A11 records why this spec extends it to the sixth anyway and how to reverse that in one expression.
 
-**`Events per user` has a different denominator in the source than in the shipped product — DO NOT silently change it.**
+**`Events per user` means two different things in the source and in the shipped product. RESOLVED: ship both, as two metrics.**
 
 | | Denominator |
 |---|---|
 | AppMetrica definition above | *the total number of app users* |
-| Shipped in Phase 1 | users **with the event**: `row.events / row.users` (`tree-utils.ts:82`, SQL `epu: 'events / users'` at `overview.service.ts:329`) |
+| Shipped in Phase 1 as `Events per user` | users **with the event**: `row.events / row.users` (`tree-utils.ts:82`, SQL `epu: 'events / users'`) |
 
-These disagree, and the difference is large: on a node fired by a tenth of the app's users, the source definition yields a number ten times smaller. Note also that `% of all users` — *"the percentage of users with the event out of the total number of app users"* — **does** use the app-wide denominator and the shipped code already matches it (`users / totals.users`).
+The difference is large: on a node fired by a tenth of the app's users, the source definition yields a number ten times smaller. Silently swapping the denominator under a column users have been reading since Phase 1 is exactly the class of change that makes a dashboard untrustworthy, and dropping the source definition would leave the product unable to answer the question AppMetrica answers.
 
-This spec **keeps the Phase 1 behaviour** and changes nothing about `epu`. Reasons: it is a visible number users have been reading since Phase 1 shipped; changing a denominator silently is exactly the class of change that makes a dashboard untrustworthy; and `Events per user` reading "events divided by the users who fired this event" is defensible on its own terms, which is why it shipped that way.
+So the catalogue carries both, and the labels and help text carry the difference:
 
-Switching to the app-wide denominator is a separate, explicitly-approved decision, not something an implementer of P1 should fold into a refactor. If it is taken, it is a one-line change in two places (the SQL sort expression and `formatEventsPerUser`) plus a note in the UI, and it must land on its own so it can be announced and reverted independently.
+| id | Label | Denominator | Default column |
+|---|---|---|---|
+| `epu` | Events per user | users **with the event** | yes — unchanged from Phase 1 |
+| `epau` | Events per app user | **all tracked users** in the period | no — added from the Metrics dialog |
+
+`epau` uses the same app-wide denominator `pctu` already uses (`totals.users`), which is the one metric whose shipped behaviour already matched the source definition — *"the percentage of users with the event out of the total number of app users"*.
+
+The help strings must state the denominator outright (`users with the event` versus `all tracked users`), because two adjacent columns differing only in a divisor are otherwise indistinguishable in a dialog listing them one under the other.
+
+Nothing about `epu` changes: same id, same SQL, same position as the third default column.
