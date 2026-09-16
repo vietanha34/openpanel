@@ -157,6 +157,10 @@ export function EventTreeTable({
         />
       </div>
 
+      {/* Metric columns are fixed-width; below ~860px the card scrolls
+          horizontally instead of clipping the right-hand columns. */}
+      <div className="overflow-x-auto">
+        <div className="min-w-[860px]">
       <div className="flex h-[38px] items-center border-b bg-muted/40">
         <div className="min-w-0 flex-1 pl-3.5 text-[11px] font-medium tracking-wide text-muted-foreground">
           EVENT › PROPERTY › VALUE › NESTED KEY
@@ -265,6 +269,8 @@ export function EventTreeTable({
             Load {EVENTS_PAGE_SIZE} more events
           </button>
         ) : null}
+      </div>
+        </div>
       </div>
     </div>
   );
