@@ -1,27 +1,32 @@
 import { useDebounceValue } from '@/hooks/use-debounce-value';
 import { useTRPC } from '@/integrations/trpc/react';
 import { cn } from '@/utils/cn';
-import type {
-  IEventAnalyticsMetricRow,
-  IEventAnalyticsSortDir,
+import {
+  type IEventAnalyticsMetric,
+  type IEventAnalyticsMetricRow,
+  metricKey,
 } from '@openpanel/validation';
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
 import { Info, RotateCw, Search, SearchX } from 'lucide-react';
 import { useState } from 'react';
 import {
+  CELL,
   type EventAnalyticsRangeInput,
   EventNode,
   type TreeContextValue,
   type TreeSelection,
+  cellStyle,
 } from './tree-nodes';
 import {
-  type SortColumn,
+  type TableSort,
   formatCount,
-  formatEventsPerUser,
-  formatPercent,
+  metricColumnLabel,
+  metricColumnWidth,
   nextSort,
+  resolveSort,
   sortArrow,
-  sortKeyForColumn,
+  tableMinWidth,
+  totalsCell,
 } from './tree-utils';
 
 const EVENTS_PAGE_SIZE = 10;
@@ -29,26 +34,17 @@ const SEARCH_DEBOUNCE_MS = 300;
 
 const EMPTY_TOTALS: IEventAnalyticsMetricRow = { events: 0, users: 0 };
 
-const CELL = 'w-[158px] shrink-0 pr-[18px] text-right';
-
-type SortState = {
-  sort: SortColumn;
-  dir: IEventAnalyticsSortDir;
-};
-
-const COLUMNS: { label: string; key: SortColumn }[] = [
-  { label: 'EVENTS', key: 'events' },
-  { label: 'USERS', key: 'users' },
-  { label: 'EVENTS PER USER', key: 'epu' },
-  // "% of all users" is users / totals.users. totals.users is constant within one
-  // query, so ordering by the percentage is identical to ordering by users —
-  // sortKeyForColumn maps it to 'users' while the cell still shows a percentage.
-  { label: '% OF ALL USERS', key: 'pctu' },
-];
-
-function TotalsCell({ value, sub }: { value: string; sub: string }) {
+function TotalsCell({
+  value,
+  sub,
+  width,
+}: {
+  value: string;
+  sub: string | null;
+  width: number;
+}) {
   return (
-    <div className={CELL}>
+    <div className={CELL} style={cellStyle(width)}>
       <div className="font-mono text-[13px] font-semibold">{value}</div>
       <div className="mt-0.5 font-mono text-[11px] text-muted-foreground">
         {sub}
@@ -58,30 +54,40 @@ function TotalsCell({ value, sub }: { value: string; sub: string }) {
 }
 
 export function EventTreeTable({
-  input,
+  input: rangeInput,
+  metrics,
+  sort: storedSort,
+  onSortChange,
+  showPct,
+  onShowPctChange,
   selection,
 }: {
   input: EventAnalyticsRangeInput;
+  /** One column per metric, in this order (design 2c). */
+  metrics: IEventAnalyticsMetric[];
+  sort: TableSort;
+  onSortChange: (sort: TableSort) => void;
+  /** The `%` toggle: relative shares under the absolute values. */
+  showPct: boolean;
+  onShowPctChange: (showPct: boolean) => void;
   selection: TreeSelection;
 }) {
   const trpc = useTRPC();
-  const [{ sort, dir }, setSort] = useState<SortState>({
-    sort: 'events',
-    dir: 'desc',
-  });
   const [search, setSearch] = useState('');
-  const [showPct, setShowPct] = useState(true);
   const debouncedSearch = useDebounceValue(search, SEARCH_DEBOUNCE_MS);
 
-  const sortKey = sortKeyForColumn(sort);
+  // Every level asks for the same metrics, so the server fills `row.metrics`.
+  const input = { ...rangeInput, metrics };
+  const sort = resolveSort(storedSort, metrics);
+  const columnWidth = metricColumnWidth(metrics.length);
 
   const listQuery = useInfiniteQuery(
     trpc.overview.eventAnalyticsList.infiniteQueryOptions(
       {
         ...input,
         search: debouncedSearch.trim() || undefined,
-        sort: sortKey,
-        dir,
+        sort: sort.key,
+        dir: sort.dir,
         limit: EVENTS_PAGE_SIZE,
       },
       {
@@ -101,8 +107,10 @@ export function EventTreeTable({
 
   const ctx: TreeContextValue = {
     input,
-    sort: sortKey,
-    dir,
+    metrics,
+    columnWidth,
+    sort: sort.key,
+    dir: sort.dir,
     showPct,
     totals,
     selection,
@@ -127,7 +135,7 @@ export function EventTreeTable({
               'w-8 font-mono text-[12px]',
               showPct ? 'bg-background' : 'bg-muted',
             )}
-            onClick={() => setShowPct(false)}
+            onClick={() => onShowPctChange(false)}
           >
             #
           </button>
@@ -138,7 +146,7 @@ export function EventTreeTable({
               'w-8 border-l font-mono text-[12px]',
               showPct ? 'bg-muted' : 'bg-background',
             )}
-            onClick={() => setShowPct(true)}
+            onClick={() => onShowPctChange(true)}
           >
             %
           </button>
@@ -157,33 +165,37 @@ export function EventTreeTable({
         />
       </div>
 
-      {/* Metric columns are fixed-width; below ~860px the card scrolls
-          horizontally instead of clipping the right-hand columns. */}
+      {/* Metric columns are fixed-width; below the track width the card
+          scrolls horizontally instead of clipping the right-hand columns. */}
       <div className="overflow-x-auto">
-        <div className="min-w-[860px]">
-      <div className="flex h-[38px] items-center border-b bg-muted/40">
+        <div style={{ minWidth: tableMinWidth(metrics.length) }}>
+      <div className="flex min-h-[38px] items-center border-b bg-muted/40">
         <div className="min-w-0 flex-1 pl-3.5 text-[11px] font-medium tracking-wide text-muted-foreground">
           EVENT › PROPERTY › VALUE › NESTED KEY
         </div>
-        {COLUMNS.map((column) => (
-          <button
-            key={column.label}
-            type="button"
-            className={cn(
-              CELL,
-              'flex items-center justify-end gap-1 text-[11px] font-medium tracking-wide',
-              sort === column.key ? 'text-foreground' : 'text-muted-foreground',
-            )}
-            onClick={() =>
-              setSort((current) => nextSort(current, column.key))
-            }
-          >
-            {column.label}
-            <span className="w-2 font-mono text-[10px]">
-              {sortArrow({ sort, dir }, column.key)}
-            </span>
-          </button>
-        ))}
+        {metrics.map((metric) => {
+          const key = metricKey(metric);
+          return (
+            <button
+              key={key}
+              type="button"
+              style={cellStyle(columnWidth)}
+              className={cn(
+                'flex shrink-0 items-center justify-end gap-[5px] py-1.5 pr-[18px] pl-1.5 text-[11px] font-medium tracking-wide hover:text-foreground',
+                sort.key === key ? 'text-foreground' : 'text-muted-foreground',
+              )}
+              onClick={() => onSortChange(nextSort(sort, key))}
+            >
+              {/* Long labels wrap rather than widen the column. */}
+              <span className="text-right leading-[1.3]">
+                {metricColumnLabel(metric)}
+              </span>
+              <span className="w-2 shrink-0 font-mono text-[10px]">
+                {sortArrow(sort, key)}
+              </span>
+            </button>
+          );
+        })}
       </div>
 
       <div className="flex h-[50px] items-center border-b bg-muted/60">
@@ -193,16 +205,13 @@ export function EventTreeTable({
             DEDUPLICATED
           </span>
         </div>
-        <TotalsCell value={formatCount(totals.events)} sub="100.00 %" />
-        <TotalsCell
-          value={formatCount(totals.users)}
-          sub="unique · not a sum"
-        />
-        <TotalsCell value={formatEventsPerUser(totals)} sub="average" />
-        <TotalsCell
-          value={formatPercent(totals.users, totals.users)}
-          sub="of tracked users"
-        />
+        {metrics.map((metric) => (
+          <TotalsCell
+            key={metricKey(metric)}
+            width={columnWidth}
+            {...totalsCell(metric, totals)}
+          />
+        ))}
       </div>
 
       {/* Padded to 40px so the note starts under the row labels, not under the

@@ -5,6 +5,7 @@ import type {
   IFilterGroup,
   IChartRange,
   IEventAnalyticsListRow,
+  IEventAnalyticsMetric,
   IEventAnalyticsMetricRow,
   IEventAnalyticsParentPathItem,
   IEventAnalyticsPropertyType,
@@ -12,7 +13,10 @@ import type {
   IEventAnalyticsSortKey,
   IEventPropertyKeyRow,
 } from '@openpanel/validation';
-import { EVENT_ANALYTICS_MAX_PARENT_PATH } from '@openpanel/validation';
+import {
+  EVENT_ANALYTICS_MAX_PARENT_PATH,
+  metricKey,
+} from '@openpanel/validation';
 import { useInfiniteQuery } from '@tanstack/react-query';
 import { ChevronRight, Plus, RotateCw } from 'lucide-react';
 import { useState } from 'react';
@@ -22,12 +26,10 @@ import {
   canExpand,
   childPath,
   formatCount,
-  formatEventsPerUser,
-  formatPercent,
   iconFor,
   indentStyle,
   loadMoreIndentStyle,
-  subPercent,
+  metricCell,
   valueKindForLevel,
 } from './tree-utils';
 
@@ -48,7 +50,11 @@ export type TreeSelection = {
 };
 
 export type TreeContextValue = {
-  input: EventAnalyticsRangeInput;
+  /** Carries `metrics`, so every level asks the server for the same columns. */
+  input: EventAnalyticsRangeInput & { metrics: IEventAnalyticsMetric[] };
+  /** Column order and width of the table (design 2c). */
+  metrics: IEventAnalyticsMetric[];
+  columnWidth: number;
   sort: IEventAnalyticsSortKey;
   dir: IEventAnalyticsSortDir;
   showPct: boolean;
@@ -59,7 +65,11 @@ export type TreeContextValue = {
 const KEYS_PAGE_SIZE = 20;
 const VALUES_PAGE_SIZE = 5;
 
-const CELL = 'w-[158px] shrink-0 pr-[18px] text-right';
+export const CELL = 'shrink-0 pr-[18px] text-right';
+
+export function cellStyle(width: number) {
+  return { width, flex: `0 0 ${width}px` };
+}
 
 const ICON_CLASSES: Record<TreeNodeKind, string> = {
   event: 'bg-blue-50 text-blue-600',
@@ -83,12 +93,14 @@ function selectedColor(selection: TreeSelection, path: string) {
 function MetricCell({
   value,
   sub,
+  width,
 }: {
   value: string;
   sub?: string | null;
+  width: number;
 }) {
   return (
-    <div className={CELL}>
+    <div className={CELL} style={cellStyle(width)}>
       <div className="font-mono text-[13px]">{value}</div>
       {sub ? (
         <div className="mt-0.5 font-mono text-[11px] text-muted-foreground">
@@ -202,16 +214,13 @@ function TreeRow({
           ) : null}
         </button>
       </div>
-      <MetricCell
-        value={formatCount(metric.events)}
-        sub={subPercent(metric.events, ctx.totals.events, ctx.showPct)}
-      />
-      <MetricCell
-        value={formatCount(metric.users)}
-        sub={subPercent(metric.users, ctx.totals.users, ctx.showPct)}
-      />
-      <MetricCell value={formatEventsPerUser(metric)} />
-      <MetricCell value={formatPercent(metric.users, ctx.totals.users)} />
+      {ctx.metrics.map((column) => (
+        <MetricCell
+          key={metricKey(column)}
+          width={ctx.columnWidth}
+          {...metricCell(column, metric, ctx.totals, ctx.showPct)}
+        />
+      ))}
     </div>
   );
 }
