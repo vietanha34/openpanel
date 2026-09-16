@@ -327,6 +327,12 @@ const EVENT_ANALYTICS_SORT_COLUMN: Record<string, string> = {
   events: 'events',
   users: 'users',
   epu: 'events / users',
+  // Both of these divide by a number that is constant within one query — the
+  // deduplicated total user count — so ordering by them is identical to
+  // ordering by their numerator, and the cheaper column wins. `pctu` is
+  // users / totals.users, `epau` is events / totals.users.
+  pctu: 'users',
+  epau: 'events',
 };
 
 /**
