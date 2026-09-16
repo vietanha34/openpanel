@@ -118,7 +118,21 @@ export const EVENT_ANALYTICS_METRICS = {
     param: false,
     additive: false,
     locked: false,
-    help: 'The ratio of the number of events to the number of users with the event',
+    help: 'The ratio of the number of events to the number of users with the event (not all tracked users)',
+  },
+  /**
+   * The AppMetrica definition of "events per user" divides by every tracked
+   * user, not by the users who fired the event. Phase 1 shipped the latter
+   * under the `epu` label, so both live in the catalogue rather than one
+   * silently changing meaning. Same app-wide denominator as `pctu`.
+   */
+  epau: {
+    label: 'Events per app user',
+    group: 'users',
+    param: false,
+    additive: false,
+    locked: false,
+    help: 'The ratio of the number of events to the total number of app users (all tracked users, not only users with the event)',
   },
   pctu: {
     label: '% of all users',
@@ -180,6 +194,9 @@ export function metricKey(metric: IEventAnalyticsMetric): string {
 
 /** Sort keys that predate the metric catalogue and stay valid forever. */
 const LEGACY_SORT_KEYS = ['events', 'users', 'epu'] as const;
+
+// `epau` is deliberately NOT here: it is a catalogue metric, so it becomes a
+// valid sort key only when the request asks for it.
 
 /** Which `sort` values a request may carry, given the metrics it asked for. */
 export function allowedSortKeys(

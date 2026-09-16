@@ -34,6 +34,7 @@ describe('metric catalogue', () => {
       'median_param',
       'users',
       'epu',
+      'epau',
       'pctu',
       'uniq_param_user',
       'sum_param_user',
@@ -69,6 +70,21 @@ describe('metric catalogue', () => {
       .map(([id]) => id);
 
     expect(additive).toEqual(['events', 'sum_param']);
+  });
+
+  it('keeps the two events-per-user metrics apart by their denominator', () => {
+    // epu divides by the users who fired the event (shipped in Phase 1);
+    // epau divides by every tracked user (the AppMetrica definition). Two
+    // adjacent columns differing only in a divisor are indistinguishable
+    // unless the help text says which is which.
+    expect(EVENT_ANALYTICS_METRICS.epu.label).toBe('Events per user');
+    expect(EVENT_ANALYTICS_METRICS.epau.label).toBe('Events per app user');
+    expect(EVENT_ANALYTICS_METRICS.epu.help).toContain('users with the event');
+    expect(EVENT_ANALYTICS_METRICS.epau.help).toContain('all tracked users');
+    expect(EVENT_ANALYTICS_METRICS.epau.group).toBe('users');
+    expect(EVENT_ANALYTICS_METRICS.epau.param).toBe(false);
+    expect(EVENT_ANALYTICS_METRICS.epau.additive).toBe(false);
+    expect(EVENT_ANALYTICS_METRICS.epau.locked).toBe(false);
   });
 
   it('groups by events and users, matching the design titles', () => {
@@ -109,6 +125,12 @@ describe('metrics validation on the range schema', () => {
 
   it('accepts the legacy request with no metrics at all', () => {
     expect(zEventAnalyticsRange.safeParse(range).success).toBe(true);
+  });
+
+  it('accepts both events-per-user metrics side by side', () => {
+    expect(
+      parse([{ id: 'events' }, { id: 'epu' }, { id: 'epau' }]).success,
+    ).toBe(true);
   });
 
   it('accepts a valid set', () => {
