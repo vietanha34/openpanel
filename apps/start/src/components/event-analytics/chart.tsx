@@ -144,10 +144,11 @@ export function EventAnalyticsChart({
                 >
                   {chipLabel(item)}
                   {/* A disabled item swallows pointer events, so a title
-                      tooltip would never show: say it inline. */}
+                      tooltip would never show: say it inline. Only epau and
+                      pctu get here; see chartSegmentFor. */}
                   {!chartable && (
                     <span className="text-muted-foreground">
-                      · not in chart
+                      · not in chart: needs all users per interval
                     </span>
                   )}
                 </SelectItem>

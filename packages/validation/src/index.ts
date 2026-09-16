@@ -2,6 +2,7 @@ import { z } from 'zod';
 
 import {
   chartSegments,
+  eventAnalyticsChartSegments,
   chartTypes,
   intervals,
   lineTypes,
@@ -47,7 +48,9 @@ export function getCohortIds(filter: {
 }
 
 export const zChartEventSegment = z
-  .enum(objectToZodEnums(chartSegments))
+  .enum(
+    objectToZodEnums({ ...chartSegments, ...eventAnalyticsChartSegments })
+  )
   .default('event')
   .describe('Defines how the event data should be segmented or aggregated');
 

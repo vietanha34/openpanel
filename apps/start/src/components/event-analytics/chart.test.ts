@@ -42,7 +42,10 @@ describe('buildEventAnalyticsChartInput', () => {
     expect(serieFor({ id: 'users' })?.segment).toBe('user');
     expect(serieFor({ id: 'epu' })?.segment).toBe('user_average');
     expect(serieFor({ id: 'sum_param', param: 'payload.coins' })).toMatchObject(
-      { segment: 'property_sum', property: 'properties.payload.coins' },
+      {
+        segment: 'property_sum_missing_zero',
+        property: 'properties.payload.coins',
+      },
     );
     expect(serieFor({ id: 'events' })).not.toHaveProperty('property');
   });
@@ -105,20 +108,33 @@ describe('buildEventAnalyticsChartInput', () => {
 });
 
 describe('chartSegmentFor', () => {
-  // The report chart has no segment that computes these the way the table
-  // does. avg_param in particular: `property_average` skips events without
-  // the parameter, the opposite of spec §3 D4 (missing counts as 0).
+  // Each parameter metric plots through a segment whose SQL is the table's
+  // aggregate, missing parameter counted as 0 (spec §3 D4). The db test
+  // `event-analytics-chart-segments.test.ts` checks each segment against the
+  // table expression and the fixture numbers.
   it.each([
-    { id: 'avg_param', param: 'level_id' },
-    { id: 'median_param', param: 'level_id' },
-    { id: 'uniq_param', param: 'level_id' },
-    { id: 'uniq_param_user', param: 'level_id' },
-    { id: 'sum_param_user', param: 'level_id' },
-    { id: 'epau' },
-    { id: 'pctu' },
-  ] satisfies IEventAnalyticsMetric[])('cannot plot $id', (metric) => {
-    expect(chartSegmentFor(metric)).toBeNull();
+    ['sum_param', 'property_sum_missing_zero'],
+    ['avg_param', 'property_average_missing_zero'],
+    ['median_param', 'property_median_missing_zero'],
+    ['uniq_param', 'property_unique_missing_zero'],
+    ['sum_param_user', 'property_sum_per_user_missing_zero'],
+    ['uniq_param_user', 'property_unique_per_user_missing_zero'],
+  ] as const)('plots %s with %s', (id, segment) => {
+    expect(chartSegmentFor({ id, param: 'level_id' })).toEqual({
+      segment,
+      property: 'properties.level_id',
+    });
+    expect(chartSegmentFor({ id })).toBeNull();
   });
+
+  // Their denominator is every tracked user per bucket, which no chart
+  // segment computes.
+  it.each([{ id: 'epau' }, { id: 'pctu' }] satisfies IEventAnalyticsMetric[])(
+    'cannot plot $id',
+    (metric) => {
+      expect(chartSegmentFor(metric)).toBeNull();
+    },
+  );
 });
 
 describe('resolveChartMetric', () => {

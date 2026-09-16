@@ -826,6 +826,11 @@ export async function getChartSql({
     }
   }
 
+  const eventAnalyticsExpression = eventAnalyticsSegmentExpression(event, 'e');
+  if (eventAnalyticsExpression) {
+    sb.select.count = `${eventAnalyticsExpression} as count`;
+  }
+
   if (event.segment === 'one_event_per_user') {
     sb.from = `(
       SELECT DISTINCT ON (profile_id) * from ${TABLE_NAMES.events} e ${getJoins()} WHERE ${join(
@@ -1175,6 +1180,11 @@ export async function getAggregateChartSql({
     }
   }
 
+  const eventAnalyticsExpression = eventAnalyticsSegmentExpression(event, 'e');
+  if (eventAnalyticsExpression) {
+    sb.select.count = `${eventAnalyticsExpression} as count`;
+  }
+
   if (event.segment === 'one_event_per_user') {
     sb.from = `(
       SELECT DISTINCT ON (profile_id) * from ${TABLE_NAMES.events} e ${getJoins()} WHERE ${join(
@@ -1205,6 +1215,47 @@ export async function getAggregateChartSql({
   console.log(sql.replaceAll(/[\n\r]/g, ' '));
   console.log('-- End --');
   return sql;
+}
+
+/**
+ * The count expression of an Event Analytics parameter segment, or null for
+ * any other segment. Mirrors `eventAnalyticsMetricExpression` in
+ * overview.service.ts (spec 2026-09-16 §5): a missing or non-numeric value is
+ * 0 (§3 D4), so there is no WHERE on the property and `avg` is spelled out as
+ * `sum / count()`. `coalesce(toFloat64OrNull(...), 0)`, never
+ * `toFloat64OrZero`, so the zero reads as a decision.
+ */
+function eventAnalyticsSegmentExpression(
+  event: IGetChartDataInput['event'],
+  eventsAlias: string,
+): string | null {
+  if (!event.property) {
+    return null;
+  }
+  const key = getSelectPropertyKey(
+    event.property,
+    undefined,
+    undefined,
+    undefined,
+    eventsAlias,
+  );
+  const value = `coalesce(toFloat64OrNull(${key}), 0)`;
+  switch (event.segment) {
+    case 'property_sum_missing_zero':
+      return `sum(${value})`;
+    case 'property_average_missing_zero':
+      return `sum(${value}) / count()`;
+    case 'property_median_missing_zero':
+      return `quantileExact(0.5)(${value})`;
+    case 'property_unique_missing_zero':
+      return `uniqExact(${value})`;
+    case 'property_sum_per_user_missing_zero':
+      return `sum(${value}) / uniqExact(profile_id)`;
+    case 'property_unique_per_user_missing_zero':
+      return `uniqExact(${value}) / uniqExact(profile_id)`;
+    default:
+      return null;
+  }
 }
 
 function isNumericColumn(columnName: string): boolean {
