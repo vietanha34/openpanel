@@ -494,7 +494,7 @@ async function main() {
 
   switch (type) {
     case 'send': {
-      const data = await import(`./${file}`, { assert: { type: 'json' } });
+      const data = await import(`./${file}`, { with: { type: 'json' } });
       await triggerEvents(data.default);
       break;
     }
