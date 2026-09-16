@@ -2,6 +2,7 @@ import { useTRPC } from '@/integrations/trpc/react';
 import { cn } from '@/utils/cn';
 import type {
   IChartEventFilter,
+  IFilterGroup,
   IChartRange,
   IEventAnalyticsListRow,
   IEventAnalyticsMetricRow,
@@ -35,6 +36,8 @@ export type EventAnalyticsRangeInput = {
   startDate?: string | null;
   endDate?: string | null;
   filters: IChartEventFilter[];
+  /** Advanced filters (AND/OR groups). Wins over `filters` when present. */
+  filterGroup?: IFilterGroup;
 };
 
 /** Shared with T5: the chart plots exactly these paths, in these colours. */
