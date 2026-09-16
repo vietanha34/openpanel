@@ -14,7 +14,7 @@ import {
   getSettingsForProject,
 } from '../services/organization.service';
 import { compute } from './compute';
-import { fetch } from './fetch';
+import { fetch, toChartQueryEvent } from './fetch';
 import { format } from './format';
 import { normalize } from './normalize';
 import { plan } from './plan';
@@ -113,14 +113,7 @@ export async function executeAggregateChart(
 
     // Build query input
     const queryInput = {
-      event: {
-        id: event.id,
-        name: event.name,
-        segment: event.segment,
-        filters: event.filters,
-        displayName: event.displayName,
-        property: event.property,
-      },
+      event: toChartQueryEvent(event),
       projectId: normalized.projectId,
       startDate: normalized.startDate,
       endDate: normalized.endDate,
@@ -239,14 +232,7 @@ export async function executeAggregateChart(
       const event = definition as IChartEventItem & { type: 'event' };
 
       const queryInput = {
-        event: {
-          id: event.id,
-          name: event.name,
-          segment: event.segment,
-          filters: event.filters,
-          displayName: event.displayName,
-          property: event.property,
-        },
+        event: toChartQueryEvent(event),
         projectId: normalized.projectId,
         startDate: previousPeriod.startDate,
         endDate: previousPeriod.endDate,

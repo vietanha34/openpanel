@@ -33,9 +33,10 @@ import {
 import { clix } from '../clickhouse/query-builder';
 import { compileFilterGroup } from './filter-group.service';
 import {
-  compileEventFilter,
+  compileEventAnalyticsFilter,
   getEventFiltersWhereClause,
   getSelectPropertyKey,
+  UTM_COLUMNS,
 } from './chart.service';
 
 // Constants
@@ -87,15 +88,6 @@ const WHITELISTED_FILTERS = [
   'utm_content',
 ];
 
-// Columns that exist on the sessions table but not on events — on events
-// they're stored inside the properties map under __query.utm_*.
-const UTM_COLUMNS = [
-  'utm_source',
-  'utm_medium',
-  'utm_campaign',
-  'utm_term',
-  'utm_content',
-];
 
 // Types
 type MetricsRow = {
@@ -319,17 +311,6 @@ function buildEventAnalyticsBaseQuery({
       )
     );
 }
-
-/** Columns of the profiles table a `profile.<column>` filter may name. */
-const EVENT_ANALYTICS_PROFILE_COLUMNS = new Set([
-  'id',
-  'first_name',
-  'last_name',
-  'email',
-  'avatar',
-  'created_at',
-  'last_seen_at',
-]);
 
 /** ClickHouse reads `%` and `_` as ILIKE wildcards; a search term is literal. */
 const LIKE_WILDCARD_RE = /[\\%_]/g;
@@ -1200,38 +1181,8 @@ export class OverviewService {
      */
     filterGroup?: IFilterGroup
   ) {
-    const compile = (item: IChartEventFilter) => {
-      if (item.name.startsWith('profile.')) {
-        if (!projectId) {
-          return null;
-        }
-        const field = item.name.slice('profile.'.length);
-        const isProperty = field.startsWith('properties.');
-        if (!(isProperty || EVENT_ANALYTICS_PROFILE_COLUMNS.has(field))) {
-          return null;
-        }
-        // Profile columns are not events columns, so the events scope would
-        // drop them; the sessions scope skips that check and changes nothing
-        // else for a `profile.*` name. Both resolve against the alias below.
-        const clause = compileEventFilter(
-          item,
-          projectId,
-          undefined,
-          isProperty ? 'events' : 'sessions'
-        );
-        return clause
-          ? `profile_id IN (SELECT id FROM ${TABLE_NAMES.profiles} AS profile FINAL WHERE project_id = ${sqlstring.escape(projectId)} AND ${clause})`
-          : null;
-      }
-
-      // The events table has no top-level utm_* columns — those live in the
-      // properties map under the __query.utm_* keys.
-      const resolved = UTM_COLUMNS.includes(item.name)
-        ? { ...item, name: `properties.__query.${item.name}` }
-        : item;
-
-      return compileEventFilter(resolved, projectId, undefined, 'events');
-    };
+    const compile = (item: IChartEventFilter) =>
+      compileEventAnalyticsFilter(item, projectId);
 
     if (!filterGroup) {
       // Keep the flat path byte-identical: the group walker parenthesises, the
