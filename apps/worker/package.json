@@ -42,6 +42,7 @@
   "devDependencies": {
     "@openpanel/tsconfig": "workspace:*",
     "@types/express": "^4.17.21",
+    "@types/node": "catalog:",
     "@types/ramda": "^0.29.6",
     "@types/source-map-support": "^0.5.10",
     "@types/sqlstring": "^2.3.2",
