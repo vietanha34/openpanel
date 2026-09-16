@@ -1,4 +1,9 @@
-import { alphabetIds, lineTypes } from '@openpanel/constants';
+import {
+  ADVANCED_FILTER_SCHEMA_VERSION,
+  ADVANCED_FILTER_SENTINEL_NAME,
+  alphabetIds,
+  lineTypes,
+} from '@openpanel/constants';
 import type {
   IChartBreakdown,
   IChartEventFilter,
@@ -13,6 +18,51 @@ import type { Report as DbReport, ReportLayout } from '../prisma-client';
 import { db } from '../prisma-client';
 
 export type IServiceReport = Awaited<ReturnType<typeof getReportById>>;
+
+/**
+ * Shown wherever the chart and table would have been. Kept as a constant so the
+ * router, the tests and the dashboard all quote the same sentence.
+ */
+export const ADVANCED_FILTER_REFUSAL_MESSAGE =
+  'This report uses advanced filters. Update to a newer dashboard version to view it.';
+
+/**
+ * The single `filters` entry written in place of a real filter list on a report
+ * whose filtering lives in a `filterGroup`. `advancedFilterGroup` is absent from
+ * the operator enum that shipped before advanced filters, so an old client fails
+ * its own schema validation instead of rendering a narrower filter silently.
+ */
+export function advancedFilterSentinel() {
+  return [
+    {
+      name: ADVANCED_FILTER_SENTINEL_NAME,
+      operator: 'advancedFilterGroup' as const,
+      value: [] as string[],
+    },
+  ];
+}
+
+/** True when the report's filtering needs group support to be read correctly. */
+export function usesAdvancedFilters(report: {
+  options?: unknown;
+}): boolean {
+  const options = report.options as { schemaVersion?: number } | null | undefined;
+  return (options?.schemaVersion ?? 1) >= ADVANCED_FILTER_SCHEMA_VERSION;
+}
+
+/**
+ * Throw before any query runs. Refusing is the point: a client that cannot read
+ * the group would otherwise draw numbers from a filter it only partly
+ * understands, with nothing to tell the user.
+ */
+export function assertReportRenderable(
+  report: { options?: unknown },
+  supportsFilterGroups: boolean,
+): void {
+  if (!supportsFilterGroups && usesAdvancedFilters(report)) {
+    throw new Error(ADVANCED_FILTER_REFUSAL_MESSAGE);
+  }
+}
 
 export const onlyReportEvents = (
   series: NonNullable<IServiceReport>['series'],

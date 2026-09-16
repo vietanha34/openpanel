@@ -17,7 +17,9 @@ import {
   getProfilePropertyKeysCached,
   getProfilePropertySelect,
   getProfilesCached,
+  ADVANCED_FILTER_REFUSAL_MESSAGE,
   getReportById,
+  usesAdvancedFilters,
   getRetentionCohort,
   getSelectPropertyKey,
   getSettingsForProject,
@@ -41,6 +43,7 @@ import {
 } from '@openpanel/validation';
 import { flatten, map, pipe, prop, sort, uniq } from 'ramda';
 import sqlstring from 'sqlstring';
+import { TRPCError } from '@trpc/server';
 import { z } from 'zod';
 import { getProjectAccess } from '../access';
 import { TRPCAccessError, TRPCForbiddenError } from '../errors';
@@ -126,6 +129,12 @@ const chartProcedure = publicProcedure.use(
       projectId: string;
       shareId?: string;
       id?: string;
+      /**
+       * Declared by clients that can read an AND/OR filter group. Absent on
+       * every client that predates advanced filters, which is exactly who must
+       * be refused rather than shown a filter they only partly understand.
+       */
+      supportsFilterGroups?: boolean;
     };
 
     if (rawInput.shareId) {
@@ -153,6 +162,17 @@ const chartProcedure = publicProcedure.use(
       const report = await getReportById(rawInput.id);
       if (!report) {
         throw new TRPCAccessError('Report not found');
+      }
+
+      // Refuse before any query runs: drawing a number from a filter the
+      // caller cannot represent is worse than showing an error.
+      if (usesAdvancedFilters(report)) {
+        if (!rawInput.supportsFilterGroups) {
+          throw new TRPCError({
+            code: 'PRECONDITION_FAILED',
+            message: ADVANCED_FILTER_REFUSAL_MESSAGE,
+          });
+        }
       }
 
       return next({

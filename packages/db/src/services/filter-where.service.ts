@@ -61,7 +61,9 @@ function compileScalarClause(
   if (
     value.length === 0 &&
     operator !== 'isNull' &&
-    operator !== 'isNotNull'
+    operator !== 'isNotNull' &&
+    operator !== 'hasProperty' &&
+    operator !== 'missingProperty'
   ) {
     return null;
   }
@@ -126,6 +128,13 @@ function compileScalarClause(
       return `(${column} = '' OR ${column} IS NULL)`;
     case 'isNotNull':
       return `(${column} != '' AND ${column} IS NOT NULL)`;
+    // Presence on these tables is always a plain column: this file never
+    // addresses a Map. An empty string counts as missing, so the two operators
+    // are exact negations of each other.
+    case 'hasProperty':
+      return `(${column} IS NOT NULL AND ${column} != '')`;
+    case 'missingProperty':
+      return `(${column} IS NULL OR ${column} = '')`;
     case 'gt': {
       return `(${value
         .map(
@@ -319,6 +328,49 @@ function buildSessionClause(
 }
 
 /**
+ * Compile ONE filter into a WHERE-clause fragment for the sessions / profiles /
+ * cohort tables, or null when it contributes nothing. Already parenthesised, so
+ * a top-level OR inside a fragment cannot rebind its surroundings.
+ *
+ * Lifted out of `buildFilterWhere` so the AND/OR group walker can reuse exactly
+ * the same per-filter SQL.
+ */
+export function compileTableFilter(
+  filter: IChartEventFilter,
+  projectId: string,
+  ctx: FilterTableContext,
+): string | null {
+  const clause = (() => {
+    if (filter.operator === 'inCohort' || filter.operator === 'notInCohort') {
+      return buildCohortClause(filter, projectId, ctx);
+    }
+
+    if (filter.name.startsWith('cohort:')) {
+      return buildCohortClause(filter, projectId, ctx);
+    }
+
+    if (filter.name.startsWith('group.')) {
+      return buildGroupClause(filter, projectId, ctx);
+    }
+
+    if (filter.name.startsWith('profile.')) {
+      return buildProfileClause(filter, projectId, ctx);
+    }
+
+    if (filter.name.startsWith('session.')) {
+      return buildSessionClause(filter, projectId, ctx);
+    }
+
+    // properties.* filters only make sense on the events table; ignore on
+    // sessions/profiles queries. Callers that need them should query the
+    // events table directly (e.g. via getEventList) or use a cohort.
+    return null;
+  })();
+
+  return clause ? `(${clause})` : null;
+}
+
+/**
  * Translate `IChartEventFilter[]` into a WHERE-clause record suitable for
  * merging into `createSqlBuilder().sb.where`. Handles cohort / group / profile
  * / session prefixes. Event-property (`properties.*`) filters are ignored on
@@ -332,42 +384,10 @@ export function buildFilterWhere(
 ): Record<string, string> {
   const where: Record<string, string> = {};
   filters.forEach((filter, index) => {
-    const id = `f${index}`;
-    // Callers concatenate these fragments with AND and no grouping, so each
-    // fragment is parenthesized here to keep a top-level OR inside it from
-    // rebinding the surrounding conditions.
-    const set = (clause: string | null) => {
-      if (clause) where[id] = `(${clause})`;
-    };
-
-    if (filter.operator === 'inCohort' || filter.operator === 'notInCohort') {
-      set(buildCohortClause(filter, projectId, ctx));
-      return;
+    const clause = compileTableFilter(filter, projectId, ctx);
+    if (clause) {
+      where[`f${index}`] = clause;
     }
-
-    if (filter.name.startsWith('cohort:')) {
-      set(buildCohortClause(filter, projectId, ctx));
-      return;
-    }
-
-    if (filter.name.startsWith('group.')) {
-      set(buildGroupClause(filter, projectId, ctx));
-      return;
-    }
-
-    if (filter.name.startsWith('profile.')) {
-      set(buildProfileClause(filter, projectId, ctx));
-      return;
-    }
-
-    if (filter.name.startsWith('session.')) {
-      set(buildSessionClause(filter, projectId, ctx));
-      return;
-    }
-
-    // properties.* filters only make sense on the events table; ignore on
-    // sessions/profiles queries. Callers that need them should query the
-    // events table directly (e.g. via getEventList) or use a cohort.
   });
   return where;
 }

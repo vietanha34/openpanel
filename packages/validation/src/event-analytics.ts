@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { zChartEventFilter, zRange } from './chart-primitives';
+import { zFilterGroup } from './filter-group';
 
 /**
  * Shared contract for the AppMetrica-style Event Analytics tree
@@ -47,6 +48,11 @@ export const zEventAnalyticsRange = z.object({
   startDate: z.string().nullish(),
   endDate: z.string().nullish(),
   filters: z.array(zChartEventFilter),
+  /**
+   * Advanced filters: an AND/OR condition tree. Wins over `filters` when
+   * present; a plain array stays valid as an implicit AND root.
+   */
+  filterGroup: zFilterGroup.optional(),
 });
 
 export const zEventAnalyticsListInput = zEventAnalyticsRange.extend({

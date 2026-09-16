@@ -15,6 +15,7 @@ import {
 } from './chart-primitives';
 
 export * from './chart-primitives';
+export * from './filter-group';
 
 /**
  * Chart formulas are plain arithmetic over series references (A, B, C, ...).

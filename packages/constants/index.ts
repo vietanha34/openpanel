@@ -103,8 +103,15 @@ export const operators = {
   lt: 'Less than',
   gte: 'Greater than or equal to',
   lte: 'Less than or equal to',
+  hasProperty: 'Has property',
+  missingProperty: 'Missing property',
   inCohort: 'In cohort',
   notInCohort: 'Not in cohort',
+  // Storage sentinel, never selectable and never compiled to SQL. Written as
+  // the sole entry of `filters` on a saved report whose real filtering lives in
+  // a `filterGroup`, so a client that predates advanced filters fails its own
+  // schema validation instead of rendering a narrower filter silently.
+  advancedFilterGroup: 'Advanced filter group',
 } as const;
 
 // Compact labels for the operator trigger button. The comparison operators
@@ -125,8 +132,11 @@ export const operatorsShort: Record<keyof typeof operators, string> = {
   lt: '<',
   gte: '≥',
   lte: '≤',
+  hasProperty: 'Has property',
+  missingProperty: 'Missing property',
   inCohort: 'In cohort',
   notInCohort: 'Not in cohort',
+  advancedFilterGroup: 'Advanced filter group',
 };
 
 // Cast type a filter value/column should be coerced to before comparing.
@@ -144,6 +154,12 @@ export const filterValueTypes = {
 
 export type IFilterValueType = keyof typeof filterValueTypes;
 
+/** `filters` entry written in place of a filter group on a saved report. */
+export const ADVANCED_FILTER_SENTINEL_NAME = '__advanced_filters__';
+
+/** `schemaVersion` carried by a report whose filtering needs group support. */
+export const ADVANCED_FILTER_SCHEMA_VERSION = 2;
+
 // Operators that make sense for each value type. The type constrains the
 // operator list in the UI (a Number can't `contains`, a Boolean only
 // `is`/`isNot`). Cohort operators are excluded everywhere — they're surfaced by
@@ -158,6 +174,8 @@ const STRING_OPERATORS = [
   'regex',
   'isNull',
   'isNotNull',
+  'hasProperty',
+  'missingProperty',
 ] as const;
 
 const ORDERED_OPERATORS = [

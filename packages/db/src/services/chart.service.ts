@@ -1255,6 +1255,537 @@ function buildNumericComparison(
     : clause;
 }
 
+/**
+ * Compile ONE filter into a WHERE-clause fragment, or null when it contributes
+ * nothing (empty value list, unknown cohort, unsupported name for the table).
+ *
+ * Lifted verbatim out of `getEventFiltersWhereClause` so the AND/OR group
+ * walker can reuse exactly the same per-filter SQL. Behaviour is unchanged:
+ * fragments are NOT parenthesised here, because the flat caller joins them with
+ * AND, where grouping cannot change the meaning. The group walker adds its own
+ * parentheses.
+ */
+export function compileEventFilter(
+  filter: IChartEventFilter,
+  projectId?: string,
+  eventsAlias?: string,
+  tableScope: 'events' | 'sessions' = 'events',
+): string | null {
+  let clause: string | null = null;
+    const { value, operator } = filter;
+    // Normalize camelCase aliases (`referrerName` → `referrer_name`) on both
+    // tables — both events and sessions schemas use snake_case. The bare-
+    // utm rewrite only applies to events because sessions stores utm_* as
+    // real top-level columns; doing it for sessions would emit
+    // `properties['__query.utm_source']` against a table that has no
+    // `properties` column.
+    const name =
+      tableScope === 'sessions'
+        ? EVENT_FIELD_ALIASES[filter.name] ?? filter.name
+        : normalizeEventField(filter.name);
+
+    if (operator === 'advancedFilterGroup') {
+      throw new Error(
+        'advancedFilterGroup is a storage sentinel and must never reach SQL compilation',
+      );
+    }
+
+    // Presence checks run before the empty-value guard below: they legitimately
+    // carry no values, like isNull / isNotNull.
+    if (operator === 'hasProperty' || operator === 'missingProperty') {
+      if (!name) return clause;
+
+      const has = operator === 'hasProperty';
+      const expr = getSelectPropertyKey(
+        name,
+        projectId,
+        undefined,
+        undefined,
+        eventsAlias,
+      );
+
+      if (name.includes('*')) {
+        clause = has
+          ? `arrayExists(x -> x != '', ${expr})`
+          : `NOT arrayExists(x -> x != '', ${expr})`;
+        return clause;
+      }
+
+      // Map-backed keys render as `map['key']`, and that is the ONLY form safe
+      // for profile.properties.*: the profile CTE narrows those keys to scalar
+      // columns and drops the Map entirely, so mapContains(profile.properties,
+      // ...) would survive rewriteProfilePropertyRefs untouched and reference a
+      // column that no longer exists. An absent key reads as '', so the lookup
+      // answers presence on its own. See the advanced filters spec §5.4.
+      clause = expr.includes('[')
+        ? has
+          ? `${expr} != ''`
+          : `${expr} = ''`
+        : has
+          ? `(${expr} IS NOT NULL AND ${expr} != '')`
+          : `(${expr} IS NULL OR ${expr} = '')`;
+      return clause;
+    }
+
+    if (
+      (operator === 'inCohort' || operator === 'notInCohort') &&
+      projectId
+    ) {
+      // Self-contained membership subselect — no caller JOIN wiring needed.
+      // Cohort filters and cohort breakdowns are decoupled: the breakdown
+      // path (getSelectPropertyKey) still uses a JOIN alias for SELECT
+      // expressions, but filters never depend on it.
+      const cohortIds = getCohortIds(filter);
+      if (cohortIds.length === 0) return clause;
+      const profileIdExpr = eventsAlias
+        ? `${eventsAlias}.profile_id`
+        : 'profile_id';
+      const op = operator === 'notInCohort' ? 'NOT IN' : 'IN';
+      const escapedIds = cohortIds
+        .map((c) => sqlstring.escape(c))
+        .join(', ');
+      clause = `${profileIdExpr} ${op} (SELECT profile_id FROM ${TABLE_NAMES.cohort_members} FINAL WHERE cohort_id IN (${escapedIds}) AND project_id = ${sqlstring.escape(projectId)})`;
+      return clause;
+    }
+
+    if (
+      value.length === 0 &&
+      operator !== 'isNull' &&
+      operator !== 'isNotNull'
+    ) {
+      return clause;
+    }
+
+    if (name === 'has_profile') {
+      if (value.includes('true')) {
+        clause = 'profile_id != device_id';
+      } else {
+        clause = 'profile_id = device_id';
+      }
+      return clause;
+    }
+
+    // Handle group. prefixed filters (requires ARRAY JOIN + _g JOIN in query)
+    if (name.startsWith('group.') && projectId) {
+      const whereFrom = getGroupPropertySql(name);
+      if (hasTypedCast(filter.type) && isTypedOperator(operator)) {
+        clause = buildTypedClause(whereFrom, operator, value, filter.type);
+        return clause;
+      }
+      switch (operator) {
+        case 'is': {
+          if (value.length === 1) {
+            clause =
+              `${whereFrom} = ${sqlstring.escape(String(value[0]).trim())}`;
+          } else {
+            clause =
+              `${whereFrom} IN (${value.map((val) => sqlstring.escape(String(val).trim())).join(', ')})`;
+          }
+          break;
+        }
+        case 'isNot': {
+          if (value.length === 1) {
+            clause =
+              `${whereFrom} != ${sqlstring.escape(String(value[0]).trim())}`;
+          } else {
+            clause =
+              `${whereFrom} NOT IN (${value.map((val) => sqlstring.escape(String(val).trim())).join(', ')})`;
+          }
+          break;
+        }
+        case 'contains': {
+          clause =
+            `(${value.map((val) => `${whereFrom} LIKE ${sqlstring.escape(`%${String(val).trim()}%`)}`).join(' OR ')})`;
+          break;
+        }
+        case 'doesNotContain': {
+          clause =
+            `(${value.map((val) => `${whereFrom} NOT LIKE ${sqlstring.escape(`%${String(val).trim()}%`)}`).join(' OR ')})`;
+          break;
+        }
+        case 'startsWith': {
+          clause =
+            `(${value.map((val) => `${whereFrom} LIKE ${sqlstring.escape(`${String(val).trim()}%`)}`).join(' OR ')})`;
+          break;
+        }
+        case 'endsWith': {
+          clause =
+            `(${value.map((val) => `${whereFrom} LIKE ${sqlstring.escape(`%${String(val).trim()}`)}`).join(' OR ')})`;
+          break;
+        }
+        case 'isNull': {
+          clause = `(${whereFrom} = '' OR ${whereFrom} IS NULL)`;
+          break;
+        }
+        case 'isNotNull': {
+          clause = `(${whereFrom} != '' AND ${whereFrom} IS NOT NULL)`;
+          break;
+        }
+        case 'regex': {
+          clause =
+            `(${value.map((val) => `match(${whereFrom}, ${sqlstring.escape(String(val).trim())})`).join(' OR ')})`;
+          break;
+        }
+      }
+      return clause;
+    }
+
+    if (
+      name.startsWith('properties.') ||
+      name.startsWith('profile.properties.')
+    ) {
+      const propertyKey = getSelectPropertyKey(
+        name,
+        undefined,
+        undefined,
+        undefined,
+        eventsAlias,
+      );
+      const isWildcard = propertyKey.includes('%');
+      const whereFrom = propertyKey;
+
+      // Typed cast (number/date/datetime/boolean) short-circuit. Casts both the
+      // column and each value so e.g. `>= '2019-01-01'` compares as dates
+      // instead of crashing `toFloat64('2019-01-01')`. Untyped/string filters
+      // fall through to the legacy switch below.
+      if (hasTypedCast(filter.type) && isTypedOperator(operator)) {
+        clause = isWildcard
+          ? `arrayExists(x -> ${buildTypedClause('x', operator, value, filter.type)}, ${whereFrom})`
+          : buildTypedClause(whereFrom, operator, value, filter.type);
+        return clause;
+      }
+
+      switch (operator) {
+        case 'is': {
+          if (isWildcard) {
+            clause = `arrayExists(x -> ${value
+              .map((val) => `x = ${sqlstring.escape(String(val).trim())}`)
+              .join(' OR ')}, ${whereFrom})`;
+          } else if (value.length === 1) {
+            clause =
+              `${whereFrom} = ${sqlstring.escape(String(value[0]).trim())}`;
+          } else {
+            clause = `${whereFrom} IN (${value
+              .map((val) => sqlstring.escape(String(val).trim()))
+              .join(', ')})`;
+          }
+          break;
+        }
+        case 'isNot': {
+          if (isWildcard) {
+            clause = `arrayExists(x -> ${value
+              .map((val) => `x != ${sqlstring.escape(String(val).trim())}`)
+              .join(' OR ')}, ${whereFrom})`;
+          } else if (value.length === 1) {
+            clause =
+              `${whereFrom} != ${sqlstring.escape(String(value[0]).trim())}`;
+          } else {
+            clause = `${whereFrom} NOT IN (${value
+              .map((val) => sqlstring.escape(String(val).trim()))
+              .join(', ')})`;
+          }
+          break;
+        }
+        case 'contains': {
+          if (isWildcard) {
+            clause = `arrayExists(x -> ${value
+              .map(
+                (val) => `x LIKE ${sqlstring.escape(`%${String(val).trim()}%`)}`
+              )
+              .join(' OR ')}, ${whereFrom})`;
+          } else {
+            clause = `(${value
+              .map(
+                (val) =>
+                  `${whereFrom} LIKE ${sqlstring.escape(`%${String(val).trim()}%`)}`
+              )
+              .join(' OR ')})`;
+          }
+          break;
+        }
+        case 'doesNotContain': {
+          if (isWildcard) {
+            clause = `arrayExists(x -> ${value
+              .map(
+                (val) =>
+                  `x NOT LIKE ${sqlstring.escape(`%${String(val).trim()}%`)}`
+              )
+              .join(' OR ')}, ${whereFrom})`;
+          } else {
+            clause = `(${value
+              .map(
+                (val) =>
+                  `${whereFrom} NOT LIKE ${sqlstring.escape(`%${String(val).trim()}%`)}`
+              )
+              .join(' OR ')})`;
+          }
+          break;
+        }
+        case 'startsWith': {
+          if (isWildcard) {
+            clause = `arrayExists(x -> ${value
+              .map(
+                (val) => `x LIKE ${sqlstring.escape(`${String(val).trim()}%`)}`
+              )
+              .join(' OR ')}, ${whereFrom})`;
+          } else {
+            clause = `(${value
+              .map(
+                (val) =>
+                  `${whereFrom} LIKE ${sqlstring.escape(`${String(val).trim()}%`)}`
+              )
+              .join(' OR ')})`;
+          }
+          break;
+        }
+        case 'endsWith': {
+          if (isWildcard) {
+            clause = `arrayExists(x -> ${value
+              .map(
+                (val) => `x LIKE ${sqlstring.escape(`%${String(val).trim()}`)}`
+              )
+              .join(' OR ')}, ${whereFrom})`;
+          } else {
+            clause = `(${value
+              .map(
+                (val) =>
+                  `${whereFrom} LIKE ${sqlstring.escape(`%${String(val).trim()}`)}`
+              )
+              .join(' OR ')})`;
+          }
+          break;
+        }
+        case 'regex': {
+          if (isWildcard) {
+            clause = `arrayExists(x -> ${value
+              .map((val) => `match(x, ${sqlstring.escape(String(val).trim())})`)
+              .join(' OR ')}, ${whereFrom})`;
+          } else {
+            clause = `(${value
+              .map(
+                (val) =>
+                  `match(${whereFrom}, ${sqlstring.escape(String(val).trim())})`
+              )
+              .join(' OR ')})`;
+          }
+          break;
+        }
+        case 'isNull': {
+          if (isWildcard) {
+            clause = `arrayExists(x -> x = '' OR x IS NULL, ${whereFrom})`;
+          } else {
+            clause = `(${whereFrom} = '' OR ${whereFrom} IS NULL)`;
+          }
+          break;
+        }
+        case 'isNotNull': {
+          if (isWildcard) {
+            clause =
+              `arrayExists(x -> x != '' AND x IS NOT NULL, ${whereFrom})`;
+          } else {
+            clause = `(${whereFrom} != '' AND ${whereFrom} IS NOT NULL)`;
+          }
+          break;
+        }
+        case 'gt': {
+          clause = buildNumericComparison(
+            whereFrom,
+            '>',
+            value,
+            isWildcard,
+          );
+          break;
+        }
+        case 'lt': {
+          clause = buildNumericComparison(
+            whereFrom,
+            '<',
+            value,
+            isWildcard,
+          );
+          break;
+        }
+        case 'gte': {
+          clause = buildNumericComparison(
+            whereFrom,
+            '>=',
+            value,
+            isWildcard,
+          );
+          break;
+        }
+        case 'lte': {
+          clause = buildNumericComparison(
+            whereFrom,
+            '<=',
+            value,
+            isWildcard,
+          );
+          break;
+        }
+      }
+    } else {
+      // Bare-column branch. For events queries: enforce that `name` is one
+      // of the known top-level columns (anything else would crash parse with
+      // UNKNOWN_IDENTIFIER). For sessions queries: skip the guard because
+      // the sessions table has its own column set (utm_*, entry_path, etc.)
+      // that OverviewService.getRawWhereClause already vets via its
+      // WHITELISTED_FILTERS pre-pass.
+      if (tableScope === 'events' && !EVENT_TOP_LEVEL_COLUMNS.has(name)) {
+        return clause;
+      }
+      // Typed cast short-circuit (see property branch above). Supersedes the
+      // `isNumericColumn` auto-detect when the user declared an explicit type.
+      if (hasTypedCast(filter.type) && isTypedOperator(operator)) {
+        clause = buildTypedClause(name, operator, value, filter.type);
+        return clause;
+      }
+      switch (operator) {
+        case 'is': {
+          if (value.length === 1) {
+            clause =
+              `${name} = ${sqlstring.escape(String(value[0]).trim())}`;
+          } else {
+            clause = `${name} IN (${value
+              .map((val) => sqlstring.escape(String(val).trim()))
+              .join(', ')})`;
+          }
+          break;
+        }
+        case 'isNull': {
+          clause = `(${name} = '' OR ${name} IS NULL)`;
+          break;
+        }
+        case 'isNotNull': {
+          clause = `(${name} != '' AND ${name} IS NOT NULL)`;
+          break;
+        }
+        case 'isNot': {
+          if (value.length === 1) {
+            clause =
+              `${name} != ${sqlstring.escape(String(value[0]).trim())}`;
+          } else {
+            clause = `${name} NOT IN (${value
+              .map((val) => sqlstring.escape(String(val).trim()))
+              .join(', ')})`;
+          }
+          break;
+        }
+        case 'contains': {
+          clause = `(${value
+            .map(
+              (val) =>
+                `${name} LIKE ${sqlstring.escape(`%${String(val).trim()}%`)}`
+            )
+            .join(' OR ')})`;
+          break;
+        }
+        case 'doesNotContain': {
+          clause = `(${value
+            .map(
+              (val) =>
+                `${name} NOT LIKE ${sqlstring.escape(`%${String(val).trim()}%`)}`
+            )
+            .join(' OR ')})`;
+          break;
+        }
+        case 'startsWith': {
+          clause = `(${value
+            .map(
+              (val) =>
+                `${name} LIKE ${sqlstring.escape(`${String(val).trim()}%`)}`
+            )
+            .join(' OR ')})`;
+          break;
+        }
+        case 'endsWith': {
+          clause = `(${value
+            .map(
+              (val) =>
+                `${name} LIKE ${sqlstring.escape(`%${String(val).trim()}`)}`
+            )
+            .join(' OR ')})`;
+          break;
+        }
+        case 'regex': {
+          clause = `(${value
+            .map(
+              (val) =>
+                `match(${name}, ${sqlstring.escape(stripLeadingAndTrailingSlashes(String(val)).trim())})`
+            )
+            .join(' OR ')})`;
+          break;
+        }
+        case 'gt': {
+          if (isNumericColumn(name)) {
+            clause = `(${value
+              .map(
+                (val) =>
+                  `toFloat64(${name}) > toFloat64(${sqlstring.escape(String(val).trim())})`
+              )
+              .join(' OR ')})`;
+          } else {
+            clause = `(${value
+              .map((val) => `${name} > ${sqlstring.escape(String(val).trim())}`)
+              .join(' OR ')})`;
+          }
+          break;
+        }
+        case 'lt': {
+          if (isNumericColumn(name)) {
+            clause = `(${value
+              .map(
+                (val) =>
+                  `toFloat64(${name}) < toFloat64(${sqlstring.escape(String(val).trim())})`
+              )
+              .join(' OR ')})`;
+          } else {
+            clause = `(${value
+              .map((val) => `${name} < ${sqlstring.escape(String(val).trim())}`)
+              .join(' OR ')})`;
+          }
+          break;
+        }
+        case 'gte': {
+          if (isNumericColumn(name)) {
+            clause = `(${value
+              .map(
+                (val) =>
+                  `toFloat64(${name}) >= toFloat64(${sqlstring.escape(String(val).trim())})`
+              )
+              .join(' OR ')})`;
+          } else {
+            clause = `(${value
+              .map(
+                (val) => `${name} >= ${sqlstring.escape(String(val).trim())}`
+              )
+              .join(' OR ')})`;
+          }
+          break;
+        }
+        case 'lte': {
+          if (isNumericColumn(name)) {
+            clause = `(${value
+              .map(
+                (val) =>
+                  `toFloat64(${name}) <= toFloat64(${sqlstring.escape(String(val).trim())})`
+              )
+              .join(' OR ')})`;
+          } else {
+            clause = `(${value
+              .map(
+                (val) => `${name} <= ${sqlstring.escape(String(val).trim())}`
+              )
+              .join(' OR ')})`;
+          }
+          break;
+        }
+      }
+    }
+
+  return clause;
+}
+
 export function getEventFiltersWhereClause(
   filters: IChartEventFilter[],
   projectId?: string,
@@ -1277,473 +1808,14 @@ export function getEventFiltersWhereClause(
 ) {
   const where: Record<string, string> = {};
   filters.forEach((filter, index) => {
-    const id = `f${index}`;
-    const { value, operator } = filter;
-    // Normalize camelCase aliases (`referrerName` → `referrer_name`) on both
-    // tables — both events and sessions schemas use snake_case. The bare-
-    // utm rewrite only applies to events because sessions stores utm_* as
-    // real top-level columns; doing it for sessions would emit
-    // `properties['__query.utm_source']` against a table that has no
-    // `properties` column.
-    const name =
-      tableScope === 'sessions'
-        ? EVENT_FIELD_ALIASES[filter.name] ?? filter.name
-        : normalizeEventField(filter.name);
-
-    if (
-      (operator === 'inCohort' || operator === 'notInCohort') &&
-      projectId
-    ) {
-      // Self-contained membership subselect — no caller JOIN wiring needed.
-      // Cohort filters and cohort breakdowns are decoupled: the breakdown
-      // path (getSelectPropertyKey) still uses a JOIN alias for SELECT
-      // expressions, but filters never depend on it.
-      const cohortIds = getCohortIds(filter);
-      if (cohortIds.length === 0) return;
-      const profileIdExpr = eventsAlias
-        ? `${eventsAlias}.profile_id`
-        : 'profile_id';
-      const op = operator === 'notInCohort' ? 'NOT IN' : 'IN';
-      const escapedIds = cohortIds
-        .map((c) => sqlstring.escape(c))
-        .join(', ');
-      where[id] = `${profileIdExpr} ${op} (SELECT profile_id FROM ${TABLE_NAMES.cohort_members} FINAL WHERE cohort_id IN (${escapedIds}) AND project_id = ${sqlstring.escape(projectId)})`;
-      return;
-    }
-
-    if (
-      value.length === 0 &&
-      operator !== 'isNull' &&
-      operator !== 'isNotNull'
-    ) {
-      return;
-    }
-
-    if (name === 'has_profile') {
-      if (value.includes('true')) {
-        where[id] = 'profile_id != device_id';
-      } else {
-        where[id] = 'profile_id = device_id';
-      }
-      return;
-    }
-
-    // Handle group. prefixed filters (requires ARRAY JOIN + _g JOIN in query)
-    if (name.startsWith('group.') && projectId) {
-      const whereFrom = getGroupPropertySql(name);
-      if (hasTypedCast(filter.type) && isTypedOperator(operator)) {
-        where[id] = buildTypedClause(whereFrom, operator, value, filter.type);
-        return;
-      }
-      switch (operator) {
-        case 'is': {
-          if (value.length === 1) {
-            where[id] =
-              `${whereFrom} = ${sqlstring.escape(String(value[0]).trim())}`;
-          } else {
-            where[id] =
-              `${whereFrom} IN (${value.map((val) => sqlstring.escape(String(val).trim())).join(', ')})`;
-          }
-          break;
-        }
-        case 'isNot': {
-          if (value.length === 1) {
-            where[id] =
-              `${whereFrom} != ${sqlstring.escape(String(value[0]).trim())}`;
-          } else {
-            where[id] =
-              `${whereFrom} NOT IN (${value.map((val) => sqlstring.escape(String(val).trim())).join(', ')})`;
-          }
-          break;
-        }
-        case 'contains': {
-          where[id] =
-            `(${value.map((val) => `${whereFrom} LIKE ${sqlstring.escape(`%${String(val).trim()}%`)}`).join(' OR ')})`;
-          break;
-        }
-        case 'doesNotContain': {
-          where[id] =
-            `(${value.map((val) => `${whereFrom} NOT LIKE ${sqlstring.escape(`%${String(val).trim()}%`)}`).join(' OR ')})`;
-          break;
-        }
-        case 'startsWith': {
-          where[id] =
-            `(${value.map((val) => `${whereFrom} LIKE ${sqlstring.escape(`${String(val).trim()}%`)}`).join(' OR ')})`;
-          break;
-        }
-        case 'endsWith': {
-          where[id] =
-            `(${value.map((val) => `${whereFrom} LIKE ${sqlstring.escape(`%${String(val).trim()}`)}`).join(' OR ')})`;
-          break;
-        }
-        case 'isNull': {
-          where[id] = `(${whereFrom} = '' OR ${whereFrom} IS NULL)`;
-          break;
-        }
-        case 'isNotNull': {
-          where[id] = `(${whereFrom} != '' AND ${whereFrom} IS NOT NULL)`;
-          break;
-        }
-        case 'regex': {
-          where[id] =
-            `(${value.map((val) => `match(${whereFrom}, ${sqlstring.escape(String(val).trim())})`).join(' OR ')})`;
-          break;
-        }
-      }
-      return;
-    }
-
-    if (
-      name.startsWith('properties.') ||
-      name.startsWith('profile.properties.')
-    ) {
-      const propertyKey = getSelectPropertyKey(
-        name,
-        undefined,
-        undefined,
-        undefined,
-        eventsAlias,
-      );
-      const isWildcard = propertyKey.includes('%');
-      const whereFrom = propertyKey;
-
-      // Typed cast (number/date/datetime/boolean) short-circuit. Casts both the
-      // column and each value so e.g. `>= '2019-01-01'` compares as dates
-      // instead of crashing `toFloat64('2019-01-01')`. Untyped/string filters
-      // fall through to the legacy switch below.
-      if (hasTypedCast(filter.type) && isTypedOperator(operator)) {
-        where[id] = isWildcard
-          ? `arrayExists(x -> ${buildTypedClause('x', operator, value, filter.type)}, ${whereFrom})`
-          : buildTypedClause(whereFrom, operator, value, filter.type);
-        return;
-      }
-
-      switch (operator) {
-        case 'is': {
-          if (isWildcard) {
-            where[id] = `arrayExists(x -> ${value
-              .map((val) => `x = ${sqlstring.escape(String(val).trim())}`)
-              .join(' OR ')}, ${whereFrom})`;
-          } else if (value.length === 1) {
-            where[id] =
-              `${whereFrom} = ${sqlstring.escape(String(value[0]).trim())}`;
-          } else {
-            where[id] = `${whereFrom} IN (${value
-              .map((val) => sqlstring.escape(String(val).trim()))
-              .join(', ')})`;
-          }
-          break;
-        }
-        case 'isNot': {
-          if (isWildcard) {
-            where[id] = `arrayExists(x -> ${value
-              .map((val) => `x != ${sqlstring.escape(String(val).trim())}`)
-              .join(' OR ')}, ${whereFrom})`;
-          } else if (value.length === 1) {
-            where[id] =
-              `${whereFrom} != ${sqlstring.escape(String(value[0]).trim())}`;
-          } else {
-            where[id] = `${whereFrom} NOT IN (${value
-              .map((val) => sqlstring.escape(String(val).trim()))
-              .join(', ')})`;
-          }
-          break;
-        }
-        case 'contains': {
-          if (isWildcard) {
-            where[id] = `arrayExists(x -> ${value
-              .map(
-                (val) => `x LIKE ${sqlstring.escape(`%${String(val).trim()}%`)}`
-              )
-              .join(' OR ')}, ${whereFrom})`;
-          } else {
-            where[id] = `(${value
-              .map(
-                (val) =>
-                  `${whereFrom} LIKE ${sqlstring.escape(`%${String(val).trim()}%`)}`
-              )
-              .join(' OR ')})`;
-          }
-          break;
-        }
-        case 'doesNotContain': {
-          if (isWildcard) {
-            where[id] = `arrayExists(x -> ${value
-              .map(
-                (val) =>
-                  `x NOT LIKE ${sqlstring.escape(`%${String(val).trim()}%`)}`
-              )
-              .join(' OR ')}, ${whereFrom})`;
-          } else {
-            where[id] = `(${value
-              .map(
-                (val) =>
-                  `${whereFrom} NOT LIKE ${sqlstring.escape(`%${String(val).trim()}%`)}`
-              )
-              .join(' OR ')})`;
-          }
-          break;
-        }
-        case 'startsWith': {
-          if (isWildcard) {
-            where[id] = `arrayExists(x -> ${value
-              .map(
-                (val) => `x LIKE ${sqlstring.escape(`${String(val).trim()}%`)}`
-              )
-              .join(' OR ')}, ${whereFrom})`;
-          } else {
-            where[id] = `(${value
-              .map(
-                (val) =>
-                  `${whereFrom} LIKE ${sqlstring.escape(`${String(val).trim()}%`)}`
-              )
-              .join(' OR ')})`;
-          }
-          break;
-        }
-        case 'endsWith': {
-          if (isWildcard) {
-            where[id] = `arrayExists(x -> ${value
-              .map(
-                (val) => `x LIKE ${sqlstring.escape(`%${String(val).trim()}`)}`
-              )
-              .join(' OR ')}, ${whereFrom})`;
-          } else {
-            where[id] = `(${value
-              .map(
-                (val) =>
-                  `${whereFrom} LIKE ${sqlstring.escape(`%${String(val).trim()}`)}`
-              )
-              .join(' OR ')})`;
-          }
-          break;
-        }
-        case 'regex': {
-          if (isWildcard) {
-            where[id] = `arrayExists(x -> ${value
-              .map((val) => `match(x, ${sqlstring.escape(String(val).trim())})`)
-              .join(' OR ')}, ${whereFrom})`;
-          } else {
-            where[id] = `(${value
-              .map(
-                (val) =>
-                  `match(${whereFrom}, ${sqlstring.escape(String(val).trim())})`
-              )
-              .join(' OR ')})`;
-          }
-          break;
-        }
-        case 'isNull': {
-          if (isWildcard) {
-            where[id] = `arrayExists(x -> x = '' OR x IS NULL, ${whereFrom})`;
-          } else {
-            where[id] = `(${whereFrom} = '' OR ${whereFrom} IS NULL)`;
-          }
-          break;
-        }
-        case 'isNotNull': {
-          if (isWildcard) {
-            where[id] =
-              `arrayExists(x -> x != '' AND x IS NOT NULL, ${whereFrom})`;
-          } else {
-            where[id] = `(${whereFrom} != '' AND ${whereFrom} IS NOT NULL)`;
-          }
-          break;
-        }
-        case 'gt': {
-          where[id] = buildNumericComparison(
-            whereFrom,
-            '>',
-            value,
-            isWildcard,
-          );
-          break;
-        }
-        case 'lt': {
-          where[id] = buildNumericComparison(
-            whereFrom,
-            '<',
-            value,
-            isWildcard,
-          );
-          break;
-        }
-        case 'gte': {
-          where[id] = buildNumericComparison(
-            whereFrom,
-            '>=',
-            value,
-            isWildcard,
-          );
-          break;
-        }
-        case 'lte': {
-          where[id] = buildNumericComparison(
-            whereFrom,
-            '<=',
-            value,
-            isWildcard,
-          );
-          break;
-        }
-      }
-    } else {
-      // Bare-column branch. For events queries: enforce that `name` is one
-      // of the known top-level columns (anything else would crash parse with
-      // UNKNOWN_IDENTIFIER). For sessions queries: skip the guard because
-      // the sessions table has its own column set (utm_*, entry_path, etc.)
-      // that OverviewService.getRawWhereClause already vets via its
-      // WHITELISTED_FILTERS pre-pass.
-      if (tableScope === 'events' && !EVENT_TOP_LEVEL_COLUMNS.has(name)) {
-        return;
-      }
-      // Typed cast short-circuit (see property branch above). Supersedes the
-      // `isNumericColumn` auto-detect when the user declared an explicit type.
-      if (hasTypedCast(filter.type) && isTypedOperator(operator)) {
-        where[id] = buildTypedClause(name, operator, value, filter.type);
-        return;
-      }
-      switch (operator) {
-        case 'is': {
-          if (value.length === 1) {
-            where[id] =
-              `${name} = ${sqlstring.escape(String(value[0]).trim())}`;
-          } else {
-            where[id] = `${name} IN (${value
-              .map((val) => sqlstring.escape(String(val).trim()))
-              .join(', ')})`;
-          }
-          break;
-        }
-        case 'isNull': {
-          where[id] = `(${name} = '' OR ${name} IS NULL)`;
-          break;
-        }
-        case 'isNotNull': {
-          where[id] = `(${name} != '' AND ${name} IS NOT NULL)`;
-          break;
-        }
-        case 'isNot': {
-          if (value.length === 1) {
-            where[id] =
-              `${name} != ${sqlstring.escape(String(value[0]).trim())}`;
-          } else {
-            where[id] = `${name} NOT IN (${value
-              .map((val) => sqlstring.escape(String(val).trim()))
-              .join(', ')})`;
-          }
-          break;
-        }
-        case 'contains': {
-          where[id] = `(${value
-            .map(
-              (val) =>
-                `${name} LIKE ${sqlstring.escape(`%${String(val).trim()}%`)}`
-            )
-            .join(' OR ')})`;
-          break;
-        }
-        case 'doesNotContain': {
-          where[id] = `(${value
-            .map(
-              (val) =>
-                `${name} NOT LIKE ${sqlstring.escape(`%${String(val).trim()}%`)}`
-            )
-            .join(' OR ')})`;
-          break;
-        }
-        case 'startsWith': {
-          where[id] = `(${value
-            .map(
-              (val) =>
-                `${name} LIKE ${sqlstring.escape(`${String(val).trim()}%`)}`
-            )
-            .join(' OR ')})`;
-          break;
-        }
-        case 'endsWith': {
-          where[id] = `(${value
-            .map(
-              (val) =>
-                `${name} LIKE ${sqlstring.escape(`%${String(val).trim()}`)}`
-            )
-            .join(' OR ')})`;
-          break;
-        }
-        case 'regex': {
-          where[id] = `(${value
-            .map(
-              (val) =>
-                `match(${name}, ${sqlstring.escape(stripLeadingAndTrailingSlashes(String(val)).trim())})`
-            )
-            .join(' OR ')})`;
-          break;
-        }
-        case 'gt': {
-          if (isNumericColumn(name)) {
-            where[id] = `(${value
-              .map(
-                (val) =>
-                  `toFloat64(${name}) > toFloat64(${sqlstring.escape(String(val).trim())})`
-              )
-              .join(' OR ')})`;
-          } else {
-            where[id] = `(${value
-              .map((val) => `${name} > ${sqlstring.escape(String(val).trim())}`)
-              .join(' OR ')})`;
-          }
-          break;
-        }
-        case 'lt': {
-          if (isNumericColumn(name)) {
-            where[id] = `(${value
-              .map(
-                (val) =>
-                  `toFloat64(${name}) < toFloat64(${sqlstring.escape(String(val).trim())})`
-              )
-              .join(' OR ')})`;
-          } else {
-            where[id] = `(${value
-              .map((val) => `${name} < ${sqlstring.escape(String(val).trim())}`)
-              .join(' OR ')})`;
-          }
-          break;
-        }
-        case 'gte': {
-          if (isNumericColumn(name)) {
-            where[id] = `(${value
-              .map(
-                (val) =>
-                  `toFloat64(${name}) >= toFloat64(${sqlstring.escape(String(val).trim())})`
-              )
-              .join(' OR ')})`;
-          } else {
-            where[id] = `(${value
-              .map(
-                (val) => `${name} >= ${sqlstring.escape(String(val).trim())}`
-              )
-              .join(' OR ')})`;
-          }
-          break;
-        }
-        case 'lte': {
-          if (isNumericColumn(name)) {
-            where[id] = `(${value
-              .map(
-                (val) =>
-                  `toFloat64(${name}) <= toFloat64(${sqlstring.escape(String(val).trim())})`
-              )
-              .join(' OR ')})`;
-          } else {
-            where[id] = `(${value
-              .map(
-                (val) => `${name} <= ${sqlstring.escape(String(val).trim())}`
-              )
-              .join(' OR ')})`;
-          }
-          break;
-        }
-      }
+    const clause = compileEventFilter(
+      filter,
+      projectId,
+      eventsAlias,
+      tableScope,
+    );
+    if (clause !== null) {
+      where[`f${index}`] = clause;
     }
   });
 
