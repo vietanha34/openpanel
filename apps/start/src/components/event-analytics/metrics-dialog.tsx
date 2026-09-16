@@ -259,8 +259,11 @@ function MetricsDialogBody({
         </ul>
 
         <div className="row mt-[38px] items-center gap-2.5">
+          {/* Explicit px sizes: this theme maps text-sm to 12px and text-xs
+              to 10px, two steps below the design's type scale. */}
           <Button
-            className="h-[38px] px-[22px] text-sm"
+            variant="cta"
+            className="h-[38px] px-[22px] text-[14px]"
             disabled={!canApply(draft)}
             onClick={() => onApply(draft.metrics)}
           >
@@ -268,13 +271,13 @@ function MetricsDialogBody({
           </Button>
           <Button
             variant="outline"
-            className="h-[38px] px-5 text-sm"
+            className="h-[38px] px-5 text-[14px]"
             onClick={onCancel}
           >
             Cancel
           </Button>
           <div className="flex-1" />
-          <span className="text-muted-foreground text-xs">
+          <span className="text-[12px] text-muted-foreground/60">
             {counterLabel(draft.metrics.length)}
           </span>
         </div>
@@ -290,7 +293,7 @@ function MetricsDialogBody({
               aria-label="Search metrics"
               value={metricSearch}
               onChange={(event) => setMetricSearch(event.target.value)}
-              className="min-w-0 flex-1 bg-transparent text-sm outline-none"
+              className="min-w-0 flex-1 bg-transparent text-[14px] outline-none"
             />
           </div>
           <div className="flex-1 overflow-auto px-2 pt-2.5 pb-3.5">
@@ -426,7 +429,7 @@ function ParameterDropdown({
       </div>
       <div className="flex-1 overflow-auto p-1.5">
         {options.length === 0 ? (
-          <div className="px-2 py-2 text-muted-foreground text-xs">
+          <div className="px-2 py-2 text-[12px] text-muted-foreground">
             No parameters
           </div>
         ) : (
@@ -437,7 +440,7 @@ function ParameterDropdown({
               className="row h-[34px] w-full items-center gap-2 rounded-[5px] px-2 text-left hover:bg-def-100"
               onClick={() => onPick(param)}
             >
-              <span className="flex-1 truncate font-mono text-xs">{param}</span>
+              <span className="flex-1 truncate font-mono text-[12px]">{param}</span>
               <CheckIcon
                 size={14}
                 className={cn('shrink-0', param !== current && 'opacity-0')}

@@ -116,7 +116,7 @@ export function EventAnalyticsChart({
       <div className="row justify-center">
         <Button
           variant="outline"
-          className="h-8 gap-2 px-3.5 shadow-sm"
+          className="h-8 gap-2 rounded-lg px-3.5 text-[13px] shadow-sm"
           onClick={() => onCollapsedChange(false)}
         >
           Show chart
@@ -155,7 +155,7 @@ export function EventAnalyticsChart({
             })}
           </SelectContent>
         </Select>
-        <span className="text-muted-foreground text-xs">
+        <span className="text-[12px] text-muted-foreground">
           {selected.length > 0
             ? `${selected.length} series plotted`
             : 'no series plotted'}
