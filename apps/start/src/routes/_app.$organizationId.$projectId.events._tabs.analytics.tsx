@@ -2,6 +2,7 @@ import { AdvancedFiltersPanel } from '@/components/event-analytics/advanced-filt
 import { EventAnalyticsChart } from '@/components/event-analytics/chart';
 import { coldStartSelection } from '@/components/event-analytics/chart-cold-start';
 import { EventTreeTable } from '@/components/event-analytics/event-tree-table';
+import { MetricsDialog } from '@/components/event-analytics/metrics-dialog';
 import type { EventAnalyticsRangeInput } from '@/components/event-analytics/tree-nodes';
 import {
   OverviewFilterButton,
@@ -120,6 +121,13 @@ function EventAnalytics() {
           enableEventsFilter
         />
         <OverviewFiltersButtons className="p-0" />
+        <MetricsDialog
+          projectId={projectId}
+          metrics={prefs.metrics}
+          sort={prefs.sort}
+          disabled={prefsStatus === 'loading'}
+          onApply={updatePrefs}
+        />
         <AdvancedFiltersPanel onChange={setFilterGroup} value={filterGroup} />
       </div>
       <EventAnalyticsChart
