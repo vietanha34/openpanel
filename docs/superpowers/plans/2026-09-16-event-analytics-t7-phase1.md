@@ -687,81 +687,99 @@ git commit -m "feat(db): compile hasProperty and missingProperty without mapCont
 
 ---
 
-### Task 7: Group-aware scope detection in the chart CTE
+### Task 7: Prove the profile-property form survives CTE narrowing
+
+**Decision D2 (settled):** `chart.service.ts` keeps `compileEventFilter` and the presence operators, because §5.4's proof lives there, but its own call sites (`getChartSql`, `getChartSqlAggregate`) are **not** switched to the group compiler in Phase 1. Every surface outside Event Analytics keeps its behaviour byte for byte; `filter-where.test.ts` and `chart-sql.test.ts` passing unchanged is the proof. The `getChartSql` switch, and the end-to-end cross-scope SQL test that needs it, move to Phase 2.
+
+What Phase 1 can still prove without that switch: the clause text `compileEventFilter` emits for a profile property is exactly the text `rewriteProfilePropertyRefs` knows how to rewrite. That is the whole of the PR #7 failure — a clause naming the bare Map is not rewritten and then references a dropped column.
 
 **Files:**
-- Modify: `packages/db/src/services/chart.service.ts` (`getChartSql`, `getChartSqlAggregate`)
-- Create: `packages/db/src/services/filter-group-scope.test.ts`
+- Create: `packages/db/src/services/profile-property-presence.test.ts`
 
-**Interfaces:** consumes `flattenConditions` (Task 1) and `getFilterGroupWhere` (Task 5).
-
-This is the PR #7 failure mode: profile join and CTE key narrowing are decided by scanning `event.filters`, which no longer holds conditions once they live in a group.
+**Interfaces:** consumes `compileEventFilter` (Task 3), `rewriteProfilePropertyRefs` and `collectProfilePropertyKeys` (existing).
 
 - [ ] **Step 1: Write the failing test**
 
 ```ts
-describe('scope detection over a group', () => {
-  it('adds the profile join for a condition buried in a sub-group', async () => {
-    const sql = await getChartSql({
-      /* event with filters: [] and filterGroup: root AND -> sub-group OR -> profile.properties.plan is pro */
-    });
-    expect(sql).toContain('LEFT ANY JOIN profile');
-    expect(sql).toContain('`profile.properties.plan`');
-    expect(sql).not.toContain('mapContains(profile.properties');
+import { describe, expect, it } from 'vitest';
+import {
+  collectProfilePropertyKeys,
+  compileEventFilter,
+  rewriteProfilePropertyRefs,
+} from './chart.service';
+
+describe('profile property presence survives CTE narrowing', () => {
+  it('emits a clause the rewrite can retarget to the scalar alias', () => {
+    const filter = {
+      name: 'profile.properties.plan',
+      operator: 'hasProperty' as const,
+      value: [],
+    };
+
+    const clause = compileEventFilter(filter, 'p', 'e', 'events');
+    expect(clause).toBe(`profile.properties['plan'] != ''`);
+
+    const { keys, needsFullMap } = collectProfilePropertyKeys([filter]);
+    expect(keys).toEqual(['plan']);
+    expect(needsFullMap).toBe(false);
+
+    // The CTE drops the Map when needsFullMap is false, so the clause MUST be
+    // rewritten to the scalar column or it references a column that is gone.
+    expect(rewriteProfilePropertyRefs(clause!, keys)).toBe(
+      "`profile.properties.plan` != ''",
+    );
   });
 
-  it('compiles a cross-scope OR with both branches resolving', async () => {
-    const sql = await getChartSql({
-      /* root OR: profile.properties.plan is pro | properties.level_mode hasProperty */
-    });
-    expect(sql).toContain('`profile.properties.plan` =');
-    expect(sql).toContain(`properties['level_mode'] != ''`);
-    expect(sql).not.toContain('mapContains(profile.properties');
+  it('never emits mapContains for a profile property', () => {
+    for (const operator of ['hasProperty', 'missingProperty', 'gt', 'is'] as const) {
+      const clause = compileEventFilter(
+        { name: 'profile.properties.plan', operator, value: ['1'] },
+        'p',
+        'e',
+        'events',
+      );
+      expect(clause ?? '').not.toContain('mapContains(profile.properties');
+    }
   });
 
-  it('keeps the full map when a wildcard profile ref is present', async () => {
-    const sql = await getChartSql({ /* adds profile.properties.* breakdown */ });
-    expect(sql).toContain('properties as "profile.properties"');
+  it('cross-scope OR fragments each rewrite independently', () => {
+    const profileClause = compileEventFilter(
+      { name: 'profile.properties.plan', operator: 'is', value: ['pro'] },
+      'p',
+      'e',
+      'events',
+    );
+    const eventClause = compileEventFilter(
+      { name: 'properties.level_mode', operator: 'hasProperty', value: [] },
+      'p',
+      'e',
+      'events',
+    );
+
+    const combined = `((${profileClause}) OR (${eventClause}))`;
+    const rewritten = rewriteProfilePropertyRefs(combined, ['plan']);
+
+    expect(rewritten).toContain('`profile.properties.plan` =');
+    expect(rewritten).toContain(`e.properties['level_mode'] != ''`);
+    expect(rewritten).not.toContain('mapContains(profile.properties');
   });
 });
 ```
 
-Fill the input objects from the existing `chart-sql.test.ts` helpers rather than inventing a new shape.
+- [ ] **Step 2: Run it and watch it fail** — `pnpm vitest run packages/db/src/services/profile-property-presence.test.ts`. Expected FAIL until Task 6 lands the presence branch.
 
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **Step 3:** no implementation of its own; Task 6 makes it pass.
 
-Run: `pnpm vitest run packages/db/src/services/filter-group-scope.test.ts`
-Expected: FAIL — no profile join, because `event.filters` is empty.
+- [ ] **Step 4: Run it plus the untouched suites**
 
-- [ ] **Step 3: Write the implementation**
-
-In both `getChartSql` and `getChartSqlAggregate`, compute the condition list once and use it for every scan:
-
-```ts
-const resolvedGroup = resolveFilterGroup(event.filters, event.filterGroup);
-const conditions = flattenConditions(resolvedGroup);
-```
-
-Then replace, mechanically:
-- `collectProfilePropertyKeys([...event.filters, ...])` → `collectProfilePropertyKeys([...conditions, ...])`
-- `event.filters.some((f) => f.name.startsWith('profile.'))` → `conditions.some(...)`
-- the `group.` and cohort-id scans → the same over `conditions`
-- `sb.where = getEventFiltersWhereClause(event.filters, projectId, 'e')` → `sb.where = getFilterGroupWhere(resolvedGroup, (f) => compileEventFilter(f, projectId, 'e', 'events'))`
-
-With no `filterGroup` present, `resolveFilterGroup` returns an implicit AND root, so the emitted SQL is the same conditions joined by AND — only the parenthesisation and the key name (`fgroup` instead of `f0`, `f1`) differ. Existing `chart-sql.test.ts` assertions that pin `f0` keys or exact whitespace will need updating; assertions on clause text must **not** change.
-
-> **Blocked pending decision (see §Open decisions):** whether Task 7 belongs in Phase 1 at all. It converts `chart.service.ts`, which §10 lists under Phase 2. It is included here only because §5.4's proof lives there. Confirm before implementing.
-
-- [ ] **Step 4: Run test to verify it passes**
-
-Run: `pnpm vitest run packages/db/src/services/filter-group-scope.test.ts packages/db/src/services/chart-sql.test.ts`
-Expected: PASS.
+Run: `pnpm vitest run packages/db/src/services/profile-property-presence.test.ts packages/db/src/services/chart-sql.test.ts packages/db/src/services/filter-where.test.ts`
+Expected: PASS, the latter two unchanged.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add packages/db/src/services/chart.service.ts packages/db/src/services/filter-group-scope.test.ts
-git commit -m "fix(db): resolve filter scope from the group tree, not the flat array"
+git add packages/db/src/services/profile-property-presence.test.ts
+git commit -m "test(db): pin the profile property presence form against CTE narrowing"
 ```
 
 ---
@@ -886,6 +904,10 @@ git commit -m "feat(trpc): pass filter groups through and refuse advanced report
 - Modify: `apps/start/src/routes/_app.$organizationId.$projectId.events._tabs.analytics.tsx`
 - Modify: `apps/start/src/hooks/use-event-query-filters.ts` (the `fg` param)
 
+**Decision D1 (settled):** the Phase 1 panel offers `['event', 'group', 'cohort']` only — **no profile category**. `getEventAnalyticsWhereClause` drops `profile.properties.*` because Event Analytics has no profile CTE join, and a silent drop inside an `OR` widens the result. The design's `user.*` rows wait for Phase 2.
+
+The same PR also closes the **pre-existing** version of this bug: the route renders `OverviewFilterButton` with no category restriction, so `PropertiesCombobox` offers profile properties today and those filters are silently dropped inside an implicit AND, narrowing the numbers. Add a category-restriction prop to `OverviewFilterButton` / the `OverviewFilters` modal, default unchanged so no other route is affected, and pass `['event', 'group', 'cohort']` from the analytics route.
+
 Layout is spec §6, which is read from artboard `1c`: 600px popover; header `Advanced filters` + `Match` + root AND/OR toggle; flat list of group cards carrying `level` and `indent: 22px`; 34px monospace join column whose word is the group-operator control; 118px operator field; `+ Condition` and a **disabled** `+ Nested group` at level 2 with `title="Nesting is limited to two levels"` and a `Max 2 nesting levels` note; footer `Applies to chart and table` / `Clear` (staged only) / `Apply filters`; 2px offset focus ring on every control.
 
 - [ ] **Step 1: Write the failing test** — render the panel with a two-level group and assert: the level-2 `+ Nested group` button is disabled and carries the title; clicking a join word flips that group's operator; `Apply filters` is disabled while a condition has an operator needing values and an empty value list; `Clear` does not change the applied group.
@@ -902,17 +924,25 @@ Layout is spec §6, which is read from artboard `1c`: 600px popover; header `Adv
 - [ ] `git status` — confirm `packages/geo/src/datacenter-asns.ts` is **not** staged
 - [ ] `pnpm vitest run packages/db packages/validation packages/trpc` — read **both** the `Test Files` and the `Tests` line; report any skipped test
 - [ ] `pnpm -F @openpanel/validation typecheck && pnpm -F @openpanel/db typecheck && pnpm -F @openpanel/trpc typecheck`
-- [ ] Push, open PR against `feature/event-analytics`, do not merge
+- [ ] Push `phase1-backend` (Tasks 1-9), open PR against `feature/event-analytics`, do not merge
+- [ ] Branch `phase1-ui` from it for Task 10, PR against `phase1-backend`
+- [ ] After the backend PR merges: retarget the UI PR to `feature/event-analytics`, rebase, and **verify the PR diff contains only the UI commits** — a retarget that swallows the backend commits is the failure T5 hit
 
 ---
 
-## Open decisions (blocking, raised before implementation)
+## Decisions (settled before implementation)
 
-**D1 — Profile properties in the Event Analytics filter picker.**
+**D1 — SETTLED: option (a).** Phase 1 panel offers `['event', 'group', 'cohort']`; the same PR restricts the existing analytics toolbar the same way, killing the pre-existing silent-narrowing bug. No profile CTE join in Phase 1 (option b), no explicit error (option c).
+
+Original analysis:
 `getEventAnalyticsWhereClause` (added by T10) **drops** every `profile.properties.*` filter, because the event analytics queries have no profile CTE join. T10's own comment says this is only safe while the UI does not offer profile properties there. It already does: the route renders `OverviewFilterButton` with no `mode`, which gives `PropertiesCombobox` the categories `['event', 'profile', 'group', 'cohort']`. Today that is a silent narrowing bug inside an implicit AND. With OR groups it becomes a silent **widening** bug, which spec §5.2 calls out as the one thing the design must prevent. Options: (a) Phase 1 panel offers `['event', 'group', 'cohort']` only, no profile — smallest, and the design's `user.*` rows wait for Phase 2; (b) add the profile CTE join to the event analytics queries — touches T10's code and T8's fixtures; (c) compile profile conditions to an explicit error instead of dropping them. Recommendation: (a).
 
-**D2 — Does Task 7 belong in Phase 1?**
+**D2 — SETTLED:** keep the extraction and the presence operators in `chart.service.ts`; do **not** switch `getChartSql` to the group compiler in Phase 1. Task 7 rewritten accordingly.
+
+Original analysis:
 It edits `chart.service.ts`, which §10 assigns to Phase 2, but §5.4's correctness proof lives exactly there and Task 8 reuses `compileEventFilter` from it. Options: (a) keep Task 7, accepting that `chart.service.ts` gains group support ahead of the rest of Phase 2; (b) drop Task 7 from this PR and let the chart keep reading `event.filters`, deferring the cross-scope tests to Phase 2. Recommendation: (a) for the extraction and the presence operators, (b) for the `getChartSql` call-site switch — that is, keep `chart.service.ts` compiling groups but leave its own callers on the flat array until Phase 2.
 
-**D3 — PR size.**
+**D3 — SETTLED:** two stacked PRs, backend merges first, then the UI PR is retargeted and rebased with a diff check.
+
+Original analysis:
 Tasks 1–9 are backend and self-contained; Task 10 is a whole UI panel. Recommendation: two stacked PRs — `phase1-backend` (Tasks 1–9) against `feature/event-analytics`, then `phase1-ui` (Task 10) against the first.
