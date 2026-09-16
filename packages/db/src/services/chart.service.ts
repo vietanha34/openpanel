@@ -234,20 +234,28 @@ export function transformPropertyKey(property: string) {
     return property;
   }
 
-  // A wildcard names every nested key under a prefix and becomes a LIKE
-  // pattern over the map's keys, relative to that map — so the matched
-  // `properties.` / `profile.properties.` prefix is dropped by length, which
-  // leaves an events key such as `properties.profile_type.*` intact:
-  //   items.*.name -> items.%.name   (middle)
-  //   tags[*]      -> tags.%         (array)
-  //   items.*      -> items.%        (trailing)
+  // Wildcard grammar. A wildcard segment names every nested key at that
+  // position, and the whole key becomes a LIKE pattern over the map's keys —
+  // relative to that map, so the matched `properties.` / `profile.properties.`
+  // prefix is dropped by length (an events key like `properties.profile_type.*`
+  // keeps its name). The `chart.properties` router writes array indexes as
+  // `.*.` (between segments) and `[*]` (otherwise), so `[*]` is the same
+  // segment as `.*`:
+  //
+  //   items.*.name     -> items.%.name    middle
+  //   items.*          -> items.%         trailing
+  //   tags[*]          -> tags.%          array
+  //   a.*.b.*.c        -> a.%.b.%.c       several: every one, not the first
+  //   a.*[*].c         -> a.%.%.c         adjacent (router output for a.0.1.c)
+  //
+  // Both replacements are global, and the lookahead leaves the next segment's
+  // dot unconsumed so adjacent wildcards (`.*.*.`) are both matched. A `*`
+  // that is not a whole segment stays literal.
   if (property.includes('*')) {
     return property
       .slice(match.length + 1)
-      .replace('.*.', '.%.')
-      .replace(/\[\*\]$/, '.%')
-      .replace(/\[\*\].?/, '.%.')
-      .replace(/\.\*$/, '.%');
+      .replace(/\[\*\]/g, '.*')
+      .replace(/\.\*(?=\.|$)/g, '.%');
   }
 
   return `${match}['${property.replace(new RegExp(`^${match}.`), '')}']`;

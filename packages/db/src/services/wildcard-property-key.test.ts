@@ -61,6 +61,17 @@ describe('transformPropertyKey', () => {
     ['profile.properties.items.*', 'items.%'],
     // An events key that merely starts with "profile" keeps its name.
     ['properties.profile_type.*', 'profile_type.%'],
+    // Several wildcards: every one becomes `%`, not only the first.
+    ['properties.a.*.b.*.c', 'a.%.b.%.c'],
+    // Adjacent wildcards share their dot, so a non-overlapping match would
+    // skip the second one.
+    ['properties.a.*.*.c', 'a.%.%.c'],
+    // What the `chart.properties` router actually emits for nested array
+    // indexes: `a.0.1.c`, `a.0.1.2.3`, `a.0.1.b.2.3.c`.
+    ['properties.a.*[*].c', 'a.%.%.c'],
+    ['properties.a.*[*].*[*]', 'a.%.%.%.%'],
+    ['properties.a.*[*].b.*[*].c', 'a.%.%.b.%.%.c'],
+    ['profile.properties.a.*.b.*.c', 'a.%.b.%.c'],
   ])('%s -> %s', (key, pattern) => {
     expect(transformPropertyKey(key)).toBe(pattern);
   });
@@ -128,6 +139,7 @@ const FORMS = {
   middle: 'items.*.name',
   trailing: 'items.*',
   array: 'tags[*]',
+  multiple: 'a.*.b.*.c',
 } as const;
 const OPERATORS = [
   { operator: 'is', value: ['5'] },
@@ -202,6 +214,21 @@ describe('wildcard clauses match the intended keys', () => {
     expect(
       await evaluate({ name: 'properties.items.*', operator: 'gt', value: ['8'] }, map)
     ).toBe(0);
+  });
+
+  // The only one of the three the filter picker produces: the router turns
+  // `a.0.b.1.c` into `a.*.b.*.c`, which used to match nothing anywhere.
+  it('two middle events wildcards (bug 3)', async (ctx) => {
+    if (!chReachable) ctx.skip('ClickHouse not reachable at CLICKHOUSE_URL');
+    const map = "map('a.0.b.1.c', 'x', 'a.0.c', 'y')";
+    const filter = (value: string): IChartEventFilter => ({
+      name: 'properties.a.*.b.*.c',
+      operator: 'is',
+      value: [value],
+    });
+
+    expect(await evaluate(filter('x'), map)).toBe(1);
+    expect(await evaluate(filter('y'), map)).toBe(0);
   });
 
   it('middle profile wildcard (bug 2)', async (ctx) => {
