@@ -233,6 +233,24 @@ export const chartSegments = {
   property_min: 'Min of property',
 };
 
+/**
+ * Segments that plot the Event Analytics parameter metrics. Unlike the
+ * `property_*` segments above, a missing or non-numeric value counts as 0
+ * (Event Analytics spec 2026-09-16 §3 D4), so every event stays in the
+ * aggregate. Kept out of `chartSegments` on purpose: that map is the report
+ * builder's segment picker, and these exist only to match the Event Analytics
+ * table.
+ */
+export const eventAnalyticsChartSegments = {
+  property_sum_missing_zero: 'Sum of property, missing as 0',
+  property_average_missing_zero: 'Average of property, missing as 0',
+  property_median_missing_zero: 'Median of property, missing as 0',
+  property_unique_missing_zero: 'Unique values of property, missing as 0',
+  property_sum_per_user_missing_zero: 'Sum of property per user, missing as 0',
+  property_unique_per_user_missing_zero:
+    'Unique values of property per user, missing as 0',
+};
+
 export const lineTypes = {
   monotone: 'Monotone',
   monotoneX: 'Monotone X',
