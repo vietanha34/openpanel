@@ -1,4 +1,7 @@
-import { chartSegments } from '@openpanel/constants';
+import {
+  chartSegments,
+  eventAnalyticsChartSegments,
+} from '@openpanel/constants';
 import { type IChartEventSegment, mapKeys } from '@openpanel/validation';
 import {
   ActivityIcon,
@@ -41,7 +44,9 @@ export function ReportSegment({
     value: key,
   }));
 
-  const Icons: Record<IChartEventSegment, LucideIcon> = {
+  // Only the picker's segments. The Event Analytics segments are valid values
+  // but not offered here, so they have no icon.
+  const Icons: Record<keyof typeof chartSegments, LucideIcon> = {
     event: ActivityIcon,
     user: UsersIcon,
     session: ClockIcon,
@@ -59,10 +64,13 @@ export function ReportSegment({
       <DropdownMenuTrigger asChild>
         <Button
           className={cn('justify-start text-sm', className)}
-          icon={Icons[value]}
+          icon={value in Icons ? Icons[value as keyof typeof Icons] : undefined}
           variant="outline"
         >
-          {items.find((item) => item.value === value)?.label}
+          {items.find((item) => item.value === value)?.label ??
+            eventAnalyticsChartSegments[
+              value as keyof typeof eventAnalyticsChartSegments
+            ]}
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent className="w-56">

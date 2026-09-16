@@ -6,6 +6,7 @@ import {
   type IChartRange,
   type IChartType,
   type IEventAnalyticsMetric,
+  type IEventAnalyticsMetricId,
   type IInterval,
   type IReportInput,
   metricKey,
@@ -30,19 +31,38 @@ export type EventAnalyticsChartGranularity = 'hour' | 'day' | 'week';
 
 type ChartSegment = { segment: IChartEventSegment; property?: string };
 
+/** Parameter metric -> chart segment with the table's missing-as-0 SQL. */
+const PARAMETER_SEGMENT = {
+  sum_param: 'property_sum_missing_zero',
+  avg_param: 'property_average_missing_zero',
+  median_param: 'property_median_missing_zero',
+  uniq_param: 'property_unique_missing_zero',
+  sum_param_user: 'property_sum_per_user_missing_zero',
+  uniq_param_user: 'property_unique_per_user_missing_zero',
+} as const satisfies Partial<Record<IEventAnalyticsMetricId, IChartEventSegment>>;
+
 /**
  * The report chart segment that computes a metric exactly as the table does,
  * or null when none exists.
  *
- * Deliberately absent: `avg_param` — `property_average` averages only the
- * events that carry the parameter, where spec §3 D4 counts a missing value as
- * 0. `sum_param` can use `property_sum` because a skipped event adds the same
- * nothing a 0 would. Every other metric has no report segment at all; plotting
- * them means adding segments to the chart service first.
+ * Parameter metrics use the `*_missing_zero` segments, never `property_*`:
+ * those drop events without the parameter, where spec §3 D4 counts a missing
+ * value as 0 (`property_average` would plot 4.5 where the table says 2.25).
+ * `epau` and `pctu` divide by every tracked user per bucket, which no segment
+ * computes.
  */
 export function chartSegmentFor(
   metric: IEventAnalyticsMetric,
 ): ChartSegment | null {
+  if (metric.id in PARAMETER_SEGMENT) {
+    return metric.param
+      ? {
+          segment:
+            PARAMETER_SEGMENT[metric.id as keyof typeof PARAMETER_SEGMENT],
+          property: `properties.${metric.param}`,
+        }
+      : null;
+  }
   switch (metric.id) {
     case 'events':
       return { segment: 'event' };
@@ -50,10 +70,6 @@ export function chartSegmentFor(
       return { segment: 'user' };
     case 'epu':
       return { segment: 'user_average' };
-    case 'sum_param':
-      return metric.param
-        ? { segment: 'property_sum', property: `properties.${metric.param}` }
-        : null;
     default:
       return null;
   }
