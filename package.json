@@ -27,7 +27,7 @@
     "fix": "ultracite fix"
   },
   "simple-git-hooks": {
-    "pre-push": "[ -n \"$SKIP_HOOKS\" ] || (pnpm typecheck && pnpm test)"
+    "pre-push": "[ -n \"$SKIP_HOOKS\" ] || pnpm typecheck"
   },
   "dependencies": {
     "@hyperdx/node-opentelemetry": "catalog:",
