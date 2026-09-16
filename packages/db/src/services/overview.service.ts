@@ -323,11 +323,22 @@ function escapeLikeTerm(term: string) {
   return term.replace(LIKE_WILDCARD_RE, '\\$&');
 }
 
-const EVENT_ANALYTICS_SORT_COLUMN: Record<IEventAnalyticsSortKey, string> = {
+const EVENT_ANALYTICS_SORT_COLUMN: Record<string, string> = {
   events: 'events',
   users: 'users',
   epu: 'events / users',
 };
+
+/**
+ * `sort` widened to a string when the metric catalogue landed, so the lookup can
+ * miss. The schema already rejects a key that is not one of the request's own
+ * metrics, so a miss here means a metric column the SQL builder does not know
+ * yet (P1 adds them) — fall back to `events` rather than emitting `undefined`
+ * into the ORDER BY.
+ */
+function eventAnalyticsSortColumn(sort: IEventAnalyticsSortKey): string {
+  return EVENT_ANALYTICS_SORT_COLUMN[sort] ?? 'events';
+}
 
 export function buildEventAnalyticsListQuery({
   search,
@@ -345,7 +356,7 @@ export function buildEventAnalyticsListQuery({
     ])
     .groupBy(['name'])
     .orderBy(
-      EVENT_ANALYTICS_SORT_COLUMN[sort],
+      eventAnalyticsSortColumn(sort),
       dir === 'asc' ? 'ASC' : 'DESC'
     )
     .orderBy('name', 'ASC')
@@ -584,7 +595,7 @@ export function buildEventPropertyValuesQuery({
     .from('base_values')
     .crossJoin('value_totals')
     .groupBy(['value', 'total_distinct'])
-    .orderBy(EVENT_ANALYTICS_SORT_COLUMN[sort], dir === 'asc' ? 'ASC' : 'DESC')
+    .orderBy(eventAnalyticsSortColumn(sort), dir === 'asc' ? 'ASC' : 'DESC')
     .orderBy(tieBreaker, 'ASC')
     // One row past the page tells us whether another page exists.
     .limit(limit + 1)
