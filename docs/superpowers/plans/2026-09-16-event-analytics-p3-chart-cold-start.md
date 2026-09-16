@@ -18,8 +18,9 @@ Design: `Event Analytics Metrics.dc.html` state `2d`; chart head and pill in `Ev
   the table's default request (same query key, so React Query shares the table's fetch). As soon as
   the decision is made the query is disabled, so later filter changes neither refetch it nor
   re-select rows.
-- Until P4's `useEventAnalyticsPrefs` lands, `hasPersistedSelection` is `false` and `collapsed` is
-  route state. After P4 merges, rebase and wire both to the hook.
+- Wired to P4's `useEventAnalyticsPrefs`: the cold start applies only when `status === 'absent'`
+  (never while `loading`, never for `stored`, even with an empty selection) and writes through
+  `update({ selected })`; `collapsed` reads and writes `prefs.chart.collapsed`.
 - Chart head gains a 32x30 icon button, `title="Hide chart"`, `minimize-2` icon.
 - Collapsed: the whole chart card is replaced by a centred `Show chart` pill with a `move-diagonal`
   icon. `ReportChart` is not rendered, so its query does not run.
