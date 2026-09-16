@@ -6,7 +6,7 @@
     "build": "next build --webpack",
     "dev": "next dev -p 9090",
     "start": "next start",
-    "typecheck": "fumadocs-mdx && tsc --noEmit",
+    "typecheck": "fumadocs-mdx && node ../../node_modules/typescript7/bin/tsc --noEmit",
     "postinstall": "fumadocs-mdx",
     "lint": "biome check",
     "format": "biome format --write",

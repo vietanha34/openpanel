@@ -1,6 +1,9 @@
 {
   "extends": "@openpanel/tsconfig/sdk.json",
   "compilerOptions": {
+    // TypeScript 7 no longer pulls every @types package into the program on its
+    // own, and this one reaches for Node globals.
+    "types": ["node"],
     "incremental": false,
     "outDir": "dist",
     "strictNullChecks": true
