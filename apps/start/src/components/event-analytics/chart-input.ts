@@ -1,12 +1,14 @@
-import type {
-  IChartBreakdown,
-  IChartEventFilter,
-  IChartEventItem,
-  IChartEventSegment,
-  IChartRange,
-  IChartType,
-  IInterval,
-  IReportInput,
+import {
+  type IChartBreakdown,
+  type IChartEventFilter,
+  type IChartEventItem,
+  type IChartEventSegment,
+  type IChartRange,
+  type IChartType,
+  type IEventAnalyticsMetric,
+  type IInterval,
+  type IReportInput,
+  metricKey,
 } from '@openpanel/validation';
 
 /**
@@ -24,14 +26,55 @@ export type EventAnalyticsSelection = {
   color: string;
 };
 
-export type EventAnalyticsChartMetric = 'events' | 'users' | 'epu';
 export type EventAnalyticsChartGranularity = 'hour' | 'day' | 'week';
 
-const METRIC_SEGMENT: Record<EventAnalyticsChartMetric, IChartEventSegment> = {
-  events: 'event',
-  users: 'user',
-  epu: 'user_average',
-};
+type ChartSegment = { segment: IChartEventSegment; property?: string };
+
+/**
+ * The report chart segment that computes a metric exactly as the table does,
+ * or null when none exists.
+ *
+ * Deliberately absent: `avg_param` — `property_average` averages only the
+ * events that carry the parameter, where spec §3 D4 counts a missing value as
+ * 0. `sum_param` can use `property_sum` because a skipped event adds the same
+ * nothing a 0 would. Every other metric has no report segment at all; plotting
+ * them means adding segments to the chart service first.
+ */
+export function chartSegmentFor(
+  metric: IEventAnalyticsMetric,
+): ChartSegment | null {
+  switch (metric.id) {
+    case 'events':
+      return { segment: 'event' };
+    case 'users':
+      return { segment: 'user' };
+    case 'epu':
+      return { segment: 'user_average' };
+    case 'sum_param':
+      return metric.param
+        ? { segment: 'property_sum', property: `properties.${metric.param}` }
+        : null;
+    default:
+      return null;
+  }
+}
+
+/**
+ * The metric the chart plots: the stored key while it is still in the chosen
+ * set and chartable, otherwise the first chartable metric of the set — e.g.
+ * after the Metrics dialog removed the one being plotted. `events` is locked
+ * in the set, so the final fallback is only reached by a malformed set.
+ */
+export function resolveChartMetric(
+  metrics: IEventAnalyticsMetric[],
+  storedKey: string,
+): IEventAnalyticsMetric {
+  const chartable = metrics.filter((metric) => chartSegmentFor(metric));
+  return (
+    chartable.find((metric) => metricKey(metric) === storedKey) ??
+    chartable[0] ?? { id: 'events' }
+  );
+}
 
 type BuildChartInputArgs = {
   projectId: string;
@@ -40,7 +83,7 @@ type BuildChartInputArgs = {
   endDate?: string | null;
   filters: IChartEventFilter[];
   selected: EventAnalyticsSelection[];
-  metric: EventAnalyticsChartMetric;
+  metric: IEventAnalyticsMetric;
   granularity: EventAnalyticsChartGranularity;
   chartType: Extract<IChartType, 'linear' | 'bar'>;
 };
@@ -68,7 +111,7 @@ export function buildEventAnalyticsChartInput({
 }: BuildChartInputArgs): Omit<IReportInput, 'series'> & {
   series: EventSerie[];
 } {
-  const segment = METRIC_SEGMENT[metric];
+  const segment = chartSegmentFor(metric) ?? { segment: 'event' as const };
   const events: string[] = [];
   const keys: string[] = [];
 
@@ -89,7 +132,7 @@ export function buildEventAnalyticsChartInput({
     id: event,
     name: event,
     displayName: event,
-    segment,
+    ...segment,
     filters,
     type: 'event',
   }));

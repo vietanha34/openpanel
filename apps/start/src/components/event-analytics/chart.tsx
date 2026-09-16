@@ -1,5 +1,12 @@
 import { ReportChart } from '@/components/report-chart';
 import { Button } from '@/components/ui/button';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import {
   ChartColumnIcon,
@@ -9,26 +16,29 @@ import {
 } from 'lucide-react';
 import { useMemo, useState } from 'react';
 
-import type { IChartEventFilter, IChartRange, IChartType } from '@openpanel/validation';
+import {
+  type IChartEventFilter,
+  type IChartRange,
+  type IChartType,
+  type IEventAnalyticsMetric,
+  metricKey,
+} from '@openpanel/validation';
 
 import type {
   EventAnalyticsChartGranularity,
-  EventAnalyticsChartMetric,
   EventAnalyticsSelection,
 } from './chart-input';
-import { buildEventAnalyticsChartInput } from './chart-input';
+import {
+  buildEventAnalyticsChartInput,
+  chartSegmentFor,
+  resolveChartMetric,
+} from './chart-input';
+import { chipLabel } from './metrics-state';
 
 export type {
   EventAnalyticsChartGranularity,
-  EventAnalyticsChartMetric,
   EventAnalyticsSelection,
 } from './chart-input';
-
-const METRIC_LABEL: Record<EventAnalyticsChartMetric, string> = {
-  events: 'Events',
-  users: 'Users',
-  epu: 'Events per user',
-};
 
 const GRANULARITY_LABEL: Record<EventAnalyticsChartGranularity, string> = {
   hour: 'Hour',
@@ -43,6 +53,11 @@ type EventAnalyticsChartProps = {
   endDate?: string | null;
   filters: IChartEventFilter[];
   selected: EventAnalyticsSelection[];
+  /** The table's chosen metrics; the select lists exactly these. */
+  metrics: IEventAnalyticsMetric[];
+  /** Persisted metric key; stale keys fall back via `resolveChartMetric`. */
+  metric: string;
+  onMetricChange: (metric: string) => void;
   collapsed: boolean;
   onCollapsedChange: (collapsed: boolean) => void;
 };
@@ -54,10 +69,16 @@ export function EventAnalyticsChart({
   endDate,
   filters,
   selected,
+  metrics,
+  metric: storedMetric,
+  onMetricChange,
   collapsed,
   onCollapsedChange,
 }: EventAnalyticsChartProps) {
-  const [metric, setMetric] = useState<EventAnalyticsChartMetric>('events');
+  const metric = useMemo(
+    () => resolveChartMetric(metrics, storedMetric),
+    [metrics, storedMetric],
+  );
   const [granularity, setGranularity] =
     useState<EventAnalyticsChartGranularity>('day');
   const [chartType, setChartType] =
@@ -108,21 +129,32 @@ export function EventAnalyticsChart({
   return (
     <div className="col rounded-lg border bg-background">
       <div className="row flex-wrap items-center gap-2 border-b p-3">
-        <ToggleGroup
-          type="single"
-          size="sm"
-          variant="outline"
-          value={metric}
-          onValueChange={(value) =>
-            value && setMetric(value as EventAnalyticsChartMetric)
-          }
-        >
-          {Object.entries(METRIC_LABEL).map(([value, label]) => (
-            <ToggleGroupItem key={value} value={value} aria-label={label}>
-              {label}
-            </ToggleGroupItem>
-          ))}
-        </ToggleGroup>
+        <Select value={metricKey(metric)} onValueChange={onMetricChange}>
+          <SelectTrigger size="sm" aria-label="Chart metric">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {metrics.map((item) => {
+              const chartable = chartSegmentFor(item) !== null;
+              return (
+                <SelectItem
+                  key={metricKey(item)}
+                  value={metricKey(item)}
+                  disabled={!chartable}
+                >
+                  {chipLabel(item)}
+                  {/* A disabled item swallows pointer events, so a title
+                      tooltip would never show: say it inline. */}
+                  {!chartable && (
+                    <span className="text-muted-foreground">
+                      · not in chart
+                    </span>
+                  )}
+                </SelectItem>
+              );
+            })}
+          </SelectContent>
+        </Select>
         <span className="text-muted-foreground text-xs">
           {selected.length > 0
             ? `${selected.length} series plotted`

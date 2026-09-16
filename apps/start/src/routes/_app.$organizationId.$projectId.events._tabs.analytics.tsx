@@ -121,6 +121,10 @@ function EventAnalytics() {
     [updatePrefs],
   );
 
+  const setChartMetric = useCallback(
+    (metric: string) => updatePrefs({ chart: { ...prefs.chart, metric } }),
+    [prefs.chart, updatePrefs],
+  );
   const setChartCollapsed = useCallback(
     (collapsed: boolean) =>
       updatePrefs({ chart: { ...prefs.chart, collapsed } }),
@@ -151,6 +155,9 @@ function EventAnalytics() {
       <EventAnalyticsChart
         {...input}
         selected={selected}
+        metrics={prefs.metrics}
+        metric={prefs.chart.metric}
+        onMetricChange={setChartMetric}
         collapsed={prefs.chart.collapsed}
         onCollapsedChange={setChartCollapsed}
       />
