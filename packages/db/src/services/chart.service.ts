@@ -234,12 +234,20 @@ export function transformPropertyKey(property: string) {
     return property;
   }
 
+  // A wildcard names every nested key under a prefix and becomes a LIKE
+  // pattern over the map's keys, relative to that map — so the matched
+  // `properties.` / `profile.properties.` prefix is dropped by length, which
+  // leaves an events key such as `properties.profile_type.*` intact:
+  //   items.*.name -> items.%.name   (middle)
+  //   tags[*]      -> tags.%         (array)
+  //   items.*      -> items.%        (trailing)
   if (property.includes('*')) {
     return property
-      .replace(/^properties\./, '')
+      .slice(match.length + 1)
       .replace('.*.', '.%.')
       .replace(/\[\*\]$/, '.%')
-      .replace(/\[\*\].?/, '.%.');
+      .replace(/\[\*\].?/, '.%.')
+      .replace(/\.\*$/, '.%');
   }
 
   return `${match}['${property.replace(new RegExp(`^${match}.`), '')}']`;
