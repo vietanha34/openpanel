@@ -176,6 +176,7 @@
     "@types/lodash.debounce": "^4.0.9",
     "@types/lodash.isequal": "^4.5.8",
     "@types/lodash.throttle": "^4.1.9",
+    "@types/node": "catalog:",
     "@types/ramda": "^0.31.0",
     "@types/react": "catalog:",
     "@types/react-dom": "catalog:",

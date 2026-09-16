@@ -283,6 +283,9 @@ importers:
       '@types/jsonwebtoken':
         specifier: ^9.0.9
         version: 9.0.9
+      '@types/node':
+        specifier: 'catalog:'
+        version: 24.10.1
       '@types/ramda':
         specifier: ^0.30.2
         version: 0.30.2
@@ -924,6 +927,9 @@ importers:
       '@types/lodash.throttle':
         specifier: ^4.1.9
         version: 4.1.9
+      '@types/node':
+        specifier: 'catalog:'
+        version: 24.10.1
       '@types/ramda':
         specifier: ^0.31.0
         version: 0.31.0
@@ -1094,6 +1100,9 @@ importers:
       '@types/express':
         specifier: ^4.17.21
         version: 4.17.21
+      '@types/node':
+        specifier: 'catalog:'
+        version: 24.10.1
       '@types/ramda':
         specifier: ^0.29.6
         version: 0.29.10
