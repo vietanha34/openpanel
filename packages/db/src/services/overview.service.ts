@@ -1205,14 +1205,6 @@ export class OverviewService {
         if (!projectId) {
           return null;
         }
-        // TODO: dropped on purpose until compileEventFilter handles wildcard
-        // profile keys. It emits `mapExtractKeyLike(profile.properties,
-        // 'profile.properties.x.*') = 'v'`, which ClickHouse rejects ("Array
-        // does not start with '['"), failing the whole report. The picker
-        // never offers such a key; the API accepts any name.
-        if (item.name.includes('*')) {
-          return null;
-        }
         const field = item.name.slice('profile.'.length);
         const isProperty = field.startsWith('properties.');
         if (!(isProperty || EVENT_ANALYTICS_PROFILE_COLUMNS.has(field))) {

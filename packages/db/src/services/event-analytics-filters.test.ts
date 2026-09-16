@@ -232,19 +232,16 @@ describe.each(Object.entries(builders))('%s property filters', (_name, build) =>
     );
   });
 
-  // Deliberate, not an oversight. `compileEventFilter` compiles a wildcard
-  // profile key into `mapExtractKeyLike(profile.properties,
-  // 'profile.properties.x.*') = 'v'`, which ClickHouse rejects outright
-  // ("Array does not start with '['"). The picker never offers such a key,
-  // but the API accepts any filter name, so the condition is dropped here
-  // rather than failing the whole report. Delete this test together with the
-  // guard once the compiler bug is fixed.
-  it('drops a wildcard profile property filter instead of crashing', () => {
-    const sql = build([
-      { name: 'profile.properties.items.*', operator: 'is', value: ['x'] },
-    ]);
-
-    expect(sql).toBe(build([]));
+  // B1 dropped these while the compiler kept the `profile.properties.` prefix
+  // in the key pattern and left a trailing `.*` literal (B5 fixed both).
+  it('resolves a wildcard profile property filter through the subselect', () => {
+    expect(
+      build([
+        { name: 'profile.properties.items.*', operator: 'is', value: ['x'] },
+      ])
+    ).toContain(
+      `profile_id IN (SELECT id FROM profiles AS profile FINAL WHERE project_id = '${range.projectId}' AND arrayExists(x -> x = 'x', arrayMap(x -> trim(x), mapValues(mapExtractKeyLike(profile.properties, 'items.%')))))`
+    );
   });
 
   it('drops a profile field that is not a profiles column', () => {
@@ -311,7 +308,9 @@ describe('profile filter inside an OR group against ClickHouse', () => {
         id,
         email: `${id}@example.com`,
         project_id: projectId,
-        properties: { plan },
+        // Only u5 carries a nested key, for the wildcard filter below.
+        properties:
+          id === users.u5 ? { plan, 'items.0.name': 'sword' } : { plan },
         created_at: '2024-03-01 00:00:00',
         last_seen_at: '2024-03-04 00:00:00',
       })),
@@ -342,6 +341,38 @@ describe('profile filter inside an OR group against ClickHouse', () => {
     expect(unfiltered).toEqual(EVENT_ANALYTICS_BLUEPRINT.totals);
     // u1: 3 level_start + 1 level_finish; u5: 2 level_finish + 1 ads_inter_shown
     expect(filtered).toEqual({ events: 7, users: 2 });
+  });
+
+  it('matches a wildcard profile key against the nested keys', async (ctx) => {
+    if (!chReachable) ctx.skip('ClickHouse not reachable at CLICKHOUSE_URL');
+
+    const totals = await overviewService.getEventAnalyticsTotals({
+      ...input,
+      filters: [
+        {
+          name: 'profile.properties.items.*.name',
+          operator: 'is',
+          value: ['sword'],
+        },
+      ],
+    });
+
+    // u5 only: 2 level_finish + 1 ads_inter_shown.
+    expect(totals).toEqual({ events: 3, users: 1 });
+  });
+
+  it('matches a trailing events wildcard against the nested keys', async (ctx) => {
+    if (!chReachable) ctx.skip('ClickHouse not reachable at CLICKHOUSE_URL');
+
+    const totals = await overviewService.getEventAnalyticsTotals({
+      ...input,
+      filters: [
+        { name: 'properties.payload.*', operator: 'is', value: ['replay'] },
+      ],
+    });
+
+    // level_start rows 3 (u2) and 7 (u4) carry payload.source = replay.
+    expect(totals).toEqual({ events: 2, users: 2 });
   });
 
   it('narrows the totals by a profile column inside an OR group', async (ctx) => {
