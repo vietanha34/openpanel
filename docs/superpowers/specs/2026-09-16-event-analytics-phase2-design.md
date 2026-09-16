@@ -162,8 +162,15 @@ export function metricKey(metric: IEventAnalyticsMetric): string {
 ### 4.3 Input and output
 
 ```ts
-export const zEventAnalyticsRange = zEventAnalyticsRange.extend({
-  metrics: z.array(zEventAnalyticsMetric).max(EVENT_ANALYTICS_MAX_METRICS).optional(),
+// Extend the existing zEventAnalyticsRange in place — do NOT write
+// `const zEventAnalyticsRange = zEventAnalyticsRange.extend(...)`, which is a
+// self-reference and throws at module load.
+export const zEventAnalyticsRange = z.object({
+  // ...the Phase 1 fields, unchanged...
+  metrics: z
+    .array(zEventAnalyticsMetric)
+    .max(EVENT_ANALYTICS_MAX_METRICS)
+    .optional(),
 });
 ```
 
