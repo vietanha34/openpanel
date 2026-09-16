@@ -130,7 +130,7 @@ describe('event analytics filter groups', () => {
     expect(sql).toContain("properties['__query.utm_source'] = 'newsletter'");
   });
 
-  it('drops profile property conditions, as the flat path already does', () => {
+  it('resolves profile property conditions through the same subselect as the flat path', () => {
     const sql = buildEventAnalyticsQuery({
       ...range,
       filters: [],
@@ -150,7 +150,9 @@ describe('event analytics filter groups', () => {
       },
     }).toSQL();
 
-    expect(sql).not.toContain('profile.properties');
+    expect(sql).toContain(
+      "profile_id IN (SELECT id FROM profiles AS profile FINAL WHERE project_id = 'test-event-analytics-groups' AND profile.properties['plan'] = 'pro')"
+    );
   });
 
   it('is byte-identical to the flat path when no group is supplied', () => {

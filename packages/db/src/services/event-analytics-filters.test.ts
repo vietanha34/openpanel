@@ -1,13 +1,29 @@
-import type { IChartEventFilter } from '@openpanel/validation';
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { IChartEventFilter, IFilterGroup } from '@openpanel/validation';
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from 'vitest';
 
-import { ch } from '../clickhouse/client';
+import { TABLE_NAMES, ch } from '../clickhouse/client';
+import {
+  EVENT_ANALYTICS_BLUEPRINT,
+  EVENT_ANALYTICS_FIXTURE,
+  setupEventAnalyticsFixtures,
+  teardownEventAnalyticsFixtures,
+} from './event-analytics-fixtures';
 import {
   buildEventAnalyticsListQuery,
   buildEventAnalyticsQuery,
   buildEventAnalyticsTotalsQuery,
   buildEventPropertyKeysQuery,
   buildEventPropertyValuesQuery,
+  overviewService,
 } from './overview.service';
 
 const range = {
@@ -45,6 +61,49 @@ const cohortFilter: IChartEventFilter[] = [
   },
 ];
 
+const profileFilter: IChartEventFilter[] = [
+  {
+    id: 'profile.properties.plan',
+    name: 'profile.properties.plan',
+    operator: 'is' as const,
+    value: ['pro'],
+  },
+];
+
+// One profile filter per operator family the compiler branches on: equality,
+// presence, numeric comparison (the branch that guards events maps with
+// mapContains), null checks.
+const profileOperatorFilters: IChartEventFilter[] = [
+  ...profileFilter,
+  { name: 'profile.properties.plan', operator: 'hasProperty', value: [] },
+  { name: 'profile.properties.plan', operator: 'missingProperty', value: [] },
+  { name: 'profile.properties.seats', operator: 'gt', value: ['5'] },
+  { name: 'profile.properties.seats', operator: 'lte', value: ['50'] },
+  { name: 'profile.properties.plan', operator: 'isNull', value: [] },
+];
+
+const profileCondition = (plan: string) => ({
+  kind: 'condition' as const,
+  filter: {
+    name: 'profile.properties.plan',
+    operator: 'is' as const,
+    value: [plan],
+  },
+});
+
+/** AND root holding one OR group made only of profile conditions. */
+const profileOrGroup: IFilterGroup = {
+  kind: 'group',
+  op: 'and',
+  children: [
+    {
+      kind: 'group',
+      op: 'or',
+      children: [profileCondition('pro'), profileCondition('team')],
+    },
+  ],
+};
+
 const listExtras = { sort: 'events' as const, dir: 'desc' as const, limit: 10 };
 const keysExtras = {
   event: 'level_complete',
@@ -65,20 +124,31 @@ const valuesExtras = {
 
 // Every event analytics SQL built from the same filter set — the property
 // filter must survive into all of them.
-const builders = {
-  analytics: (filters: IChartEventFilter[]) =>
-    buildEventAnalyticsQuery({ ...range, filters }).toSQL(),
-  list: (filters: IChartEventFilter[]) =>
-    buildEventAnalyticsListQuery({ ...range, ...listExtras, filters }).toSQL(),
-  totals: (filters: IChartEventFilter[]) =>
-    buildEventAnalyticsTotalsQuery({ ...range, filters }).toSQL(),
-  propertyKeys: (filters: IChartEventFilter[]) =>
-    buildEventPropertyKeysQuery({ ...range, ...keysExtras, filters }).toSQL(),
-  propertyValues: (filters: IChartEventFilter[]) =>
+const builders: Record<
+  string,
+  (filters: IChartEventFilter[], filterGroup?: IFilterGroup) => string
+> = {
+  analytics: (filters, filterGroup) =>
+    buildEventAnalyticsQuery({ ...range, filters, filterGroup }).toSQL(),
+  list: (filters, filterGroup) =>
+    buildEventAnalyticsListQuery({ ...range, ...listExtras, filters, filterGroup }).toSQL(),
+  totals: (filters, filterGroup) =>
+    buildEventAnalyticsTotalsQuery({ ...range, filters, filterGroup }).toSQL(),
+  propertyKeys: (filters, filterGroup) =>
+    // The keys/values input types do not declare `filterGroup`, but both
+    // builders forward the whole range to the shared base query.
+    buildEventPropertyKeysQuery({
+      ...range,
+      ...keysExtras,
+      filters,
+      ...{ filterGroup },
+    }).toSQL(),
+  propertyValues: (filters, filterGroup) =>
     buildEventPropertyValuesQuery({
       ...range,
       ...valuesExtras,
       filters,
+      ...{ filterGroup },
     }).toSQL(),
 };
 
@@ -113,27 +183,36 @@ describe.each(Object.entries(builders))('%s property filters', (_name, build) =>
     expect(sql).not.toMatch(/(?<!\.)\butm_source\s*=/);
   });
 
-  // Deliberate, not an oversight: `profile.properties.plan` compiles to
-  // `profile.properties['plan']`, which only resolves in the chart queries
-  // that join the profile CTE. Event analytics has no such join, so emitting
-  // it would fail the query outright with UNKNOWN_IDENTIFIER. Dropping it is
-  // only acceptable while the UI does not offer profile properties in the
-  // Event Analytics filter picker — do NOT "fix" this into a
-  // `mapContains(profile.properties, …)` clause. Making these filters work
-  // means joining the profile CTE (or surfacing an explicit error), never
-  // widening the emitted SQL here.
-  it('drops a profile property filter on purpose — no join resolves it', () => {
-    const sql = build([
-      {
-        id: 'profile.properties.plan',
-        name: 'profile.properties.plan',
-        operator: 'is' as const,
-        value: ['pro'],
-      },
-    ]);
+  it('resolves a profile property filter through a self-contained subselect', () => {
+    const sql = build(profileFilter);
 
-    expect(sql).not.toContain('profile.properties');
-    expect(sql).not.toContain("'pro'");
+    expect(sql).toContain(
+      `profile_id IN (SELECT id FROM profiles AS profile FINAL WHERE project_id = '${range.projectId}' AND profile.properties['plan'] = 'pro')`
+    );
+  });
+
+  // Phase 1 spec §5.4, kept by the Phase 2 spec §3 D1: presence is a map
+  // lookup compared with '', never mapContains — for every operator. Counted
+  // against the unfiltered SQL because the property values builder carries
+  // its own mapContains on the events map it drills into.
+  it('never emits mapContains for a profile property filter', () => {
+    const count = (sql: string) => sql.split('mapContains').length - 1;
+    const baseline = count(build([]));
+
+    for (const filter of profileOperatorFilters) {
+      expect(count(build([filter]))).toBe(baseline);
+    }
+    expect(build(profileOperatorFilters)).toContain(
+      "profile.properties['plan'] != ''"
+    );
+  });
+
+  it('keeps a profile filter inside an OR group instead of dropping the group', () => {
+    const sql = build([], profileOrGroup);
+
+    expect(sql).toContain(
+      "((profile_id IN (SELECT id FROM profiles AS profile FINAL WHERE project_id = 'test-event-analytics-filters' AND profile.properties['plan'] = 'pro')) OR (profile_id IN (SELECT id FROM profiles AS profile FINAL WHERE project_id = 'test-event-analytics-filters' AND profile.properties['plan'] = 'team'))"
+    );
   });
 
   it('resolves a cohort filter through a self-contained subselect', () => {
@@ -148,5 +227,102 @@ describe.each(Object.entries(builders))('%s property filters', (_name, build) =>
     await ch.command({ query: `EXPLAIN ${build(propertyFilter)}` });
     await ch.command({ query: `EXPLAIN ${build(utmFilter)}` });
     await ch.command({ query: `EXPLAIN ${build(cohortFilter)}` });
+    await ch.command({ query: `EXPLAIN ${build(profileOperatorFilters)}` });
+    await ch.command({
+      query: `EXPLAIN ${build([], profileOrGroup)}`,
+    });
+  });
+});
+
+// Real data, not SQL text: the Phase 1 failure mode was a dropped branch
+// silently turning an OR group into "no restriction". Only u1 is on `pro` and
+// only u5 on `team`, so the group must shrink the totals to those two users.
+const MUTATION_HOOK_TIMEOUT_MS = 60_000;
+
+describe('profile filter inside an OR group against ClickHouse', () => {
+  const projectId = 'test-event-analytics-profile-or';
+  const { users } = EVENT_ANALYTICS_FIXTURE;
+  const input = { projectId, ...EVENT_ANALYTICS_FIXTURE.range };
+
+  const deleteProfiles = () =>
+    ch.command({
+      query: `DELETE FROM ${TABLE_NAMES.profiles} WHERE project_id = {projectId:String}`,
+      query_params: { projectId },
+      clickhouse_settings: { mutations_sync: '2' },
+    });
+
+  beforeAll(async () => {
+    if (!chReachable) return;
+    await setupEventAnalyticsFixtures(projectId);
+    await deleteProfiles();
+    await ch.insert({
+      table: TABLE_NAMES.profiles,
+      format: 'JSONEachRow',
+      values: [
+        [users.u1, 'pro'],
+        [users.u2, 'free'],
+        [users.u5, 'team'],
+      ].map(([id, plan]) => ({
+        id,
+        project_id: projectId,
+        properties: { plan },
+        created_at: '2024-03-01 00:00:00',
+        last_seen_at: '2024-03-04 00:00:00',
+      })),
+    });
+    // Lightweight deletes queue behind other suites' mutations on a shared
+    // ClickHouse; the default 10s hook timeout is not enough under load.
+  }, MUTATION_HOOK_TIMEOUT_MS);
+
+  afterAll(async () => {
+    if (!chReachable) return;
+    await teardownEventAnalyticsFixtures(projectId);
+    await deleteProfiles();
+  }, MUTATION_HOOK_TIMEOUT_MS);
+
+  it('narrows the totals to the matching profiles instead of widening them', async (ctx) => {
+    if (!chReachable) ctx.skip('ClickHouse not reachable at CLICKHOUSE_URL');
+
+    const unfiltered = await overviewService.getEventAnalyticsTotals({
+      ...input,
+      filters: [],
+    });
+    const filtered = await overviewService.getEventAnalyticsTotals({
+      ...input,
+      filters: [],
+      filterGroup: profileOrGroup,
+    });
+
+    expect(unfiltered).toEqual(EVENT_ANALYTICS_BLUEPRINT.totals);
+    // u1: 3 level_start + 1 level_finish; u5: 2 level_finish + 1 ads_inter_shown
+    expect(filtered).toEqual({ events: 7, users: 2 });
+  });
+
+  it('ORs a profile branch with an event property branch', async (ctx) => {
+    if (!chReachable) ctx.skip('ClickHouse not reachable at CLICKHOUSE_URL');
+
+    const totals = await overviewService.getEventAnalyticsTotals({
+      ...input,
+      filters: [],
+      filterGroup: {
+        kind: 'group',
+        op: 'or',
+        children: [
+          profileCondition('pro'),
+          {
+            kind: 'condition',
+            filter: {
+              name: 'properties.level_mode',
+              operator: 'is',
+              value: ['hard'],
+            },
+          },
+        ],
+      },
+    });
+
+    // hard rows 2, 3, 5, 7 (u1, u2, u3, u4) plus every u1 event (rows 1, 2,
+    // 8 and one level_finish): rows 1, 2, 3, 5, 7, 8 + level_finish = 7.
+    expect(totals).toEqual({ events: 7, users: 4 });
   });
 });

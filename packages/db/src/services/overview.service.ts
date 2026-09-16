@@ -1053,13 +1053,14 @@ export class OverviewService {
    * `getEventFiltersWhereClause`, which already drops names it cannot resolve
    * on the events table.
    *
-   * `profile.properties.*` is the one exception: it emits
-   * `profile.properties['key']`, which only resolves in the chart queries that
-   * join the profile CTE. Event analytics has no such join, so those filters
-   * are dropped instead of crashing the query. Known limitation: dropping is
-   * only safe while the UI offers no profile properties in the Event
-   * Analytics filter picker. Once it does, join the profile CTE or surface an
-   * explicit error — never keep dropping them silently.
+   * `profile.properties.*` compiles to `profile.properties['key']`, which
+   * only resolves where a `profile` relation exists. Event analytics only ever
+   * filters by profile properties, so instead of the chart's profile CTE the
+   * condition is wrapped in a self-contained subselect that aliases the
+   * profiles table as `profile` (Phase 2 spec §3 D1). The per-filter SQL is
+   * therefore byte-for-byte what the chart emits — presence stays
+   * `properties['k'] != ''`, never mapContains — and the clause composes
+   * inside an OR group like any other condition.
    */
   getEventAnalyticsWhereClause(
     filters: IChartEventFilter[],
@@ -1073,7 +1074,13 @@ export class OverviewService {
   ) {
     const compile = (item: IChartEventFilter) => {
       if (item.name.startsWith('profile.properties.')) {
-        return null;
+        if (!projectId) {
+          return null;
+        }
+        const clause = compileEventFilter(item, projectId, undefined, 'events');
+        return clause
+          ? `profile_id IN (SELECT id FROM ${TABLE_NAMES.profiles} AS profile FINAL WHERE project_id = ${sqlstring.escape(projectId)} AND ${clause})`
+          : null;
       }
 
       // The events table has no top-level utm_* columns — those live in the
