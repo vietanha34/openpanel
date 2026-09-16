@@ -91,6 +91,17 @@ const profileCondition = (plan: string) => ({
   },
 });
 
+// The profile category also offers the profiles table's own columns. One per
+// operator family, including a date comparison on a DateTime64 column.
+const profileColumnFilters: IChartEventFilter[] = [
+  { name: 'profile.email', operator: 'is', value: ['u5@example.com'] },
+  { name: 'profile.first_name', operator: 'contains', value: ['An'] },
+  { name: 'profile.last_name', operator: 'isNull', value: [] },
+  { name: 'profile.id', operator: 'isNot', value: ['ea-u1'] },
+  { name: 'profile.created_at', operator: 'gt', value: ['2024-01-01'] },
+  { name: 'profile.last_seen_at', operator: 'hasProperty', value: [] },
+];
+
 /** AND root holding one OR group made only of profile conditions. */
 const profileOrGroup: IFilterGroup = {
   kind: 'group',
@@ -215,6 +226,33 @@ describe.each(Object.entries(builders))('%s property filters', (_name, build) =>
     );
   });
 
+  it('resolves a profile column filter through the same subselect', () => {
+    expect(build([profileColumnFilters[0]!])).toContain(
+      `profile_id IN (SELECT id FROM profiles AS profile FINAL WHERE project_id = '${range.projectId}' AND profile.email = 'u5@example.com')`
+    );
+  });
+
+  // Deliberate, not an oversight. `compileEventFilter` compiles a wildcard
+  // profile key into `mapExtractKeyLike(profile.properties,
+  // 'profile.properties.x.*') = 'v'`, which ClickHouse rejects outright
+  // ("Array does not start with '['"). The picker never offers such a key,
+  // but the API accepts any filter name, so the condition is dropped here
+  // rather than failing the whole report. Delete this test together with the
+  // guard once the compiler bug is fixed.
+  it('drops a wildcard profile property filter instead of crashing', () => {
+    const sql = build([
+      { name: 'profile.properties.items.*', operator: 'is', value: ['x'] },
+    ]);
+
+    expect(sql).toBe(build([]));
+  });
+
+  it('drops a profile field that is not a profiles column', () => {
+    expect(
+      build([{ name: 'profile.nickname', operator: 'is', value: ['x'] }])
+    ).toBe(build([]));
+  });
+
   it('resolves a cohort filter through a self-contained subselect', () => {
     const sql = build(cohortFilter);
 
@@ -228,6 +266,13 @@ describe.each(Object.entries(builders))('%s property filters', (_name, build) =>
     await ch.command({ query: `EXPLAIN ${build(utmFilter)}` });
     await ch.command({ query: `EXPLAIN ${build(cohortFilter)}` });
     await ch.command({ query: `EXPLAIN ${build(profileOperatorFilters)}` });
+    await ch.command({ query: `EXPLAIN ${build(profileColumnFilters)}` });
+    await ch.command({
+      query: `EXPLAIN ${build([
+        ...profileFilter,
+        { name: 'profile.properties.items.*', operator: 'is', value: ['x'] },
+      ])}`,
+    });
     await ch.command({
       query: `EXPLAIN ${build([], profileOrGroup)}`,
     });
@@ -264,6 +309,7 @@ describe('profile filter inside an OR group against ClickHouse', () => {
         [users.u5, 'team'],
       ].map(([id, plan]) => ({
         id,
+        email: `${id}@example.com`,
         project_id: projectId,
         properties: { plan },
         created_at: '2024-03-01 00:00:00',
@@ -296,6 +342,33 @@ describe('profile filter inside an OR group against ClickHouse', () => {
     expect(unfiltered).toEqual(EVENT_ANALYTICS_BLUEPRINT.totals);
     // u1: 3 level_start + 1 level_finish; u5: 2 level_finish + 1 ads_inter_shown
     expect(filtered).toEqual({ events: 7, users: 2 });
+  });
+
+  it('narrows the totals by a profile column inside an OR group', async (ctx) => {
+    if (!chReachable) ctx.skip('ClickHouse not reachable at CLICKHOUSE_URL');
+
+    const totals = await overviewService.getEventAnalyticsTotals({
+      ...input,
+      filters: [],
+      filterGroup: {
+        kind: 'group',
+        op: 'or',
+        children: [
+          profileCondition('pro'),
+          {
+            kind: 'condition',
+            filter: {
+              name: 'profile.email',
+              operator: 'is',
+              value: [`${users.u5}@example.com`],
+            },
+          },
+        ],
+      },
+    });
+
+    // u1 (plan pro) and u5 (by email): the same two users as pro OR team.
+    expect(totals).toEqual({ events: 7, users: 2 });
   });
 
   it('ORs a profile branch with an event property branch', async (ctx) => {
