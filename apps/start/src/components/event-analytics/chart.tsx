@@ -21,6 +21,7 @@ import {
   type IChartRange,
   type IChartType,
   type IEventAnalyticsMetric,
+  type IFilterGroup,
   metricKey,
 } from '@openpanel/validation';
 
@@ -52,6 +53,8 @@ type EventAnalyticsChartProps = {
   startDate?: string | null;
   endDate?: string | null;
   filters: IChartEventFilter[];
+  /** The table's advanced filter group; the chart must filter exactly as it. */
+  filterGroup?: IFilterGroup;
   selected: EventAnalyticsSelection[];
   /** The table's chosen metrics; the select lists exactly these. */
   metrics: IEventAnalyticsMetric[];
@@ -68,6 +71,7 @@ export function EventAnalyticsChart({
   startDate,
   endDate,
   filters,
+  filterGroup,
   selected,
   metrics,
   metric: storedMetric,
@@ -92,6 +96,7 @@ export function EventAnalyticsChart({
         startDate,
         endDate,
         filters,
+        filterGroup,
         selected,
         metric,
         granularity,
@@ -103,6 +108,7 @@ export function EventAnalyticsChart({
       startDate,
       endDate,
       filters,
+      filterGroup,
       selected,
       metric,
       granularity,
