@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
-import { buildEventAnalyticsChartInput } from './chart-input';
+import type { IEventAnalyticsMetric } from '@openpanel/validation';
+
+import {
+  buildEventAnalyticsChartInput,
+  chartSegmentFor,
+  resolveChartMetric,
+} from './chart-input';
 
 const base = {
   projectId: 'proj',
@@ -8,7 +14,7 @@ const base = {
   startDate: null,
   endDate: null,
   filters: [],
-  metric: 'events' as const,
+  metric: { id: 'events' } as IEventAnalyticsMetric,
   granularity: 'day' as const,
   chartType: 'linear' as const,
 };
@@ -29,13 +35,16 @@ describe('buildEventAnalyticsChartInput', () => {
 
   it('maps the metric to a chart segment', () => {
     const selected = [{ path: '/level_start', color: '#2563EB' }];
-    const segmentFor = (metric: 'events' | 'users' | 'epu') =>
-      buildEventAnalyticsChartInput({ ...base, metric, selected }).series[0]
-        ?.segment;
+    const serieFor = (metric: IEventAnalyticsMetric) =>
+      buildEventAnalyticsChartInput({ ...base, metric, selected }).series[0];
 
-    expect(segmentFor('events')).toBe('event');
-    expect(segmentFor('users')).toBe('user');
-    expect(segmentFor('epu')).toBe('user_average');
+    expect(serieFor({ id: 'events' })?.segment).toBe('event');
+    expect(serieFor({ id: 'users' })?.segment).toBe('user');
+    expect(serieFor({ id: 'epu' })?.segment).toBe('user_average');
+    expect(serieFor({ id: 'sum_param', param: 'payload.coins' })).toMatchObject(
+      { segment: 'property_sum', property: 'properties.payload.coins' },
+    );
+    expect(serieFor({ id: 'events' })).not.toHaveProperty('property');
   });
 
   it('maps granularity to the chart interval and keeps the chart type', () => {
@@ -92,5 +101,63 @@ describe('buildEventAnalyticsChartInput', () => {
 
     expect(input.series).toEqual([]);
     expect(input.breakdowns).toEqual([]);
+  });
+});
+
+describe('chartSegmentFor', () => {
+  // The report chart has no segment that computes these the way the table
+  // does. avg_param in particular: `property_average` skips events without
+  // the parameter, the opposite of spec §3 D4 (missing counts as 0).
+  it.each([
+    { id: 'avg_param', param: 'level_id' },
+    { id: 'median_param', param: 'level_id' },
+    { id: 'uniq_param', param: 'level_id' },
+    { id: 'uniq_param_user', param: 'level_id' },
+    { id: 'sum_param_user', param: 'level_id' },
+    { id: 'epau' },
+    { id: 'pctu' },
+  ] satisfies IEventAnalyticsMetric[])('cannot plot $id', (metric) => {
+    expect(chartSegmentFor(metric)).toBeNull();
+  });
+});
+
+describe('resolveChartMetric', () => {
+  const metrics: IEventAnalyticsMetric[] = [
+    { id: 'events' },
+    { id: 'users' },
+    { id: 'sum_param', param: 'day' },
+  ];
+
+  it('keeps the stored metric while it is still in the set', () => {
+    expect(resolveChartMetric(metrics, 'users')).toEqual({ id: 'users' });
+    expect(resolveChartMetric(metrics, 'sum_param:day')).toEqual({
+      id: 'sum_param',
+      param: 'day',
+    });
+  });
+
+  it('falls back to the first metric once the stored one is removed', () => {
+    expect(resolveChartMetric(metrics, 'epu')).toEqual({ id: 'events' });
+    // Same id, different parameter: a different column, so also removed.
+    expect(resolveChartMetric(metrics, 'sum_param:level_id')).toEqual({
+      id: 'events',
+    });
+  });
+
+  it('skips metrics the chart cannot plot', () => {
+    const set: IEventAnalyticsMetric[] = [
+      { id: 'pctu' },
+      { id: 'users' },
+      { id: 'events' },
+    ];
+
+    expect(resolveChartMetric(set, 'pctu')).toEqual({ id: 'users' });
+    expect(resolveChartMetric(set, 'gone')).toEqual({ id: 'users' });
+  });
+
+  it('plots events when nothing in the set is chartable', () => {
+    expect(resolveChartMetric([{ id: 'pctu' }], 'pctu')).toEqual({
+      id: 'events',
+    });
   });
 });
