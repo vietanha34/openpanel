@@ -72,6 +72,13 @@ describe('transformPropertyKey', () => {
     ['properties.a.*[*].*[*]', 'a.%.%.%.%'],
     ['properties.a.*[*].b.*[*].c', 'a.%.%.b.%.%.c'],
     ['profile.properties.a.*.b.*.c', 'a.%.b.%.c'],
+    // A wildcard as the first segment has no dot before it (K2).
+    ['properties.*.sku', '%.sku'],
+    ['profile.properties.*.sku', '%.sku'],
+    ['properties.*.*.sku', '%.%.sku'],
+    // A bare wildcard is a single segment naming every key.
+    ['properties.*', '%'],
+    ['profile.properties.*', '%'],
   ])('%s -> %s', (key, pattern) => {
     expect(transformPropertyKey(key)).toBe(pattern);
   });
@@ -140,6 +147,8 @@ const FORMS = {
   trailing: 'items.*',
   array: 'tags[*]',
   multiple: 'a.*.b.*.c',
+  leading: '*.sku',
+  bare: '*',
 } as const;
 const OPERATORS = [
   { operator: 'is', value: ['5'] },
@@ -229,6 +238,34 @@ describe('wildcard clauses match the intended keys', () => {
 
     expect(await evaluate(filter('x'), map)).toBe(1);
     expect(await evaluate(filter('y'), map)).toBe(0);
+  });
+
+  it('leading wildcard (K2)', async (ctx) => {
+    if (!chReachable) ctx.skip('ClickHouse not reachable at CLICKHOUSE_URL');
+    const filter = (name: string, value: string): IChartEventFilter => ({
+      name,
+      operator: 'is',
+      value: [value],
+    });
+
+    for (const name of ['properties.*.sku', 'profile.properties.*.sku']) {
+      expect(await evaluate(filter(name, 'x'), "map('a.sku', 'x')")).toBe(1);
+      expect(await evaluate(filter(name, 'x'), "map('sku', 'x')")).toBe(0);
+    }
+  });
+
+  // Decision: a bare `*` is a whole segment like any other, so it names every
+  // key of the map rather than a key literally called "*".
+  it('bare wildcard matches any key', async (ctx) => {
+    if (!chReachable) ctx.skip('ClickHouse not reachable at CLICKHOUSE_URL');
+    const filter: IChartEventFilter = {
+      name: 'properties.*',
+      operator: 'is',
+      value: ['x'],
+    };
+
+    expect(await evaluate(filter, "map('a', 'y', 'b.c', 'x')")).toBe(1);
+    expect(await evaluate(filter, "map('a', 'y')")).toBe(0);
   });
 
   it('middle profile wildcard (bug 2)', async (ctx) => {
