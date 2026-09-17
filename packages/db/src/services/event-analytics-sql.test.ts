@@ -4,7 +4,6 @@ import { ch } from '../clickhouse/client';
 import { Query } from '../clickhouse/query-builder';
 import {
   buildEventAnalyticsListQuery,
-  buildEventAnalyticsQuery,
   buildEventAnalyticsTotalsQuery,
   overviewService,
 } from './overview.service';
@@ -33,32 +32,6 @@ beforeAll(async () => {
 });
 
 afterEach(() => vi.restoreAllMocks());
-
-describe('buildEventAnalyticsQuery', () => {
-  it('computes each event share against all filtered users', () => {
-    const sql = buildEventAnalyticsQuery(input).toSQL();
-
-    expect(sql).toContain('uniqExact(profile_id) AS users');
-    expect(sql).toContain('uniqExact(profile_id) AS total_users');
-    expect(sql).toContain('count() AS total_events');
-    expect(sql).toContain('users / total_users AS user_percentage');
-  });
-
-  it('returns event counts, users, and events per user for the selected range', () => {
-    const sql = buildEventAnalyticsQuery(input).toSQL();
-
-    expect(sql).toContain('count() AS events');
-    expect(sql).toContain('events / total_events AS event_percentage');
-    expect(sql).toContain('events / users AS events_per_user');
-    expect(sql).toContain('GROUP BY name');
-    expect(sql).toContain('ORDER BY events DESC');
-  });
-
-  it('parses in ClickHouse when available', async (ctx) => {
-    if (!chReachable) ctx.skip('ClickHouse not reachable at CLICKHOUSE_URL');
-    await ch.command({ query: `EXPLAIN ${buildEventAnalyticsQuery(input).toSQL()}` });
-  });
-});
 
 const listInput = {
   ...input,

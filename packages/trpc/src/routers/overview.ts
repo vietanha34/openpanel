@@ -12,7 +12,6 @@ import {
   TABLE_NAMES,
   validateOverviewShareAccess,
   zGetMapDataInput,
-  zGetEventAnalyticsInput,
   zGetMetricsInput,
   zGetTopEventsInput,
   zGetTopGenericInput,
@@ -480,30 +479,8 @@ export const overviewRouter = createTRPCRouter({
       return current;
     }),
 
-  eventAnalytics: overviewProcedure
-    .input(
-      zGetEventAnalyticsInput.omit({ startDate: true, endDate: true }).extend({
-        startDate: z.string().nullish(),
-        endDate: z.string().nullish(),
-        range: zRange,
-        shareId: z.string().optional(),
-      })
-    )
-    .use(cacher)
-    .query(async ({ input }) => {
-      const { timezone } = await getSettingsForProject(input.projectId);
-      const { current } = await getCurrentAndPrevious(
-        { ...input, timezone },
-        false,
-        timezone
-      )(overviewService.getEventAnalytics.bind(overviewService));
-
-      return current;
-    }),
-
   // Event analytics tree (event -> property key -> value -> nested key).
-  // Every level is now served from ClickHouse; the Wave 0 mocks are only kept
-  // for their own tests.
+  // Every level is served from ClickHouse.
   // See docs/superpowers/specs/2026-09-15-event-analytics-tree-design.md
   eventAnalyticsList: overviewProcedure
     .input(zEventAnalyticsListInput.extend({ shareId: z.string().optional() }))

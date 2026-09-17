@@ -3,7 +3,6 @@ import { describe, expect, it } from 'vitest';
 
 import {
   buildEventAnalyticsListQuery,
-  buildEventAnalyticsQuery,
 } from './overview.service';
 
 const range = {
@@ -40,8 +39,9 @@ const orGroup: IFilterGroup = {
 
 describe('event analytics filter groups', () => {
   it('emits an OR between two property conditions', () => {
-    const sql = buildEventAnalyticsQuery({
+    const sql = buildEventAnalyticsListQuery({
       ...range,
+      ...listExtras,
       filters: [],
       filterGroup: orGroup,
     }).toSQL();
@@ -64,8 +64,9 @@ describe('event analytics filter groups', () => {
   });
 
   it('nests a sub-group inside the root operator', () => {
-    const sql = buildEventAnalyticsQuery({
+    const sql = buildEventAnalyticsListQuery({
       ...range,
+      ...listExtras,
       filters: [],
       filterGroup: {
         kind: 'group',
@@ -108,8 +109,9 @@ describe('event analytics filter groups', () => {
   });
 
   it('still rewrites utm names inside a group', () => {
-    const sql = buildEventAnalyticsQuery({
+    const sql = buildEventAnalyticsListQuery({
       ...range,
+      ...listExtras,
       filters: [],
       filterGroup: {
         kind: 'group',
@@ -131,8 +133,9 @@ describe('event analytics filter groups', () => {
   });
 
   it('resolves profile property conditions through the same subselect as the flat path', () => {
-    const sql = buildEventAnalyticsQuery({
+    const sql = buildEventAnalyticsListQuery({
       ...range,
+      ...listExtras,
       filters: [],
       filterGroup: {
         kind: 'group',
@@ -164,9 +167,12 @@ describe('event analytics filter groups', () => {
       },
     ];
 
-    expect(buildEventAnalyticsQuery({ ...range, filters }).toSQL()).toBe(
-      buildEventAnalyticsQuery({
+    expect(
+      buildEventAnalyticsListQuery({ ...range, ...listExtras, filters }).toSQL(),
+    ).toBe(
+      buildEventAnalyticsListQuery({
         ...range,
+        ...listExtras,
         filters,
         filterGroup: undefined,
       }).toSQL(),
