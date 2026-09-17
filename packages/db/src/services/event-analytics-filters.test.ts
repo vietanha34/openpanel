@@ -19,7 +19,6 @@ import {
 } from './event-analytics-fixtures';
 import {
   buildEventAnalyticsListQuery,
-  buildEventAnalyticsQuery,
   buildEventAnalyticsTotalsQuery,
   buildEventPropertyKeysQuery,
   buildEventPropertyValuesQuery,
@@ -139,8 +138,6 @@ const builders: Record<
   string,
   (filters: IChartEventFilter[], filterGroup?: IFilterGroup) => string
 > = {
-  analytics: (filters, filterGroup) =>
-    buildEventAnalyticsQuery({ ...range, filters, filterGroup }).toSQL(),
   list: (filters, filterGroup) =>
     buildEventAnalyticsListQuery({ ...range, ...listExtras, filters, filterGroup }).toSQL(),
   totals: (filters, filterGroup) =>

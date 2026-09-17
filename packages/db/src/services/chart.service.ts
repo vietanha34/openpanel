@@ -249,15 +249,18 @@ export function transformPropertyKey(property: string) {
   //   tags[*]          -> tags.%          array
   //   a.*.b.*.c        -> a.%.b.%.c       several: every one, not the first
   //   a.*[*].c         -> a.%.%.c         adjacent (router output for a.0.1.c)
+  //   *.sku            -> %.sku           leading: no dot before it
+  //   *                -> %               bare: every key of the map
   //
-  // Both replacements are global, and the lookahead leaves the next segment's
-  // dot unconsumed so adjacent wildcards (`.*.*.`) are both matched. A `*`
-  // that is not a whole segment stays literal.
+  // A `*` is a segment when it starts the key or follows a dot, and ends the
+  // key or precedes a dot. Both replacements are global, and the lookahead
+  // leaves the next segment's dot unconsumed so adjacent wildcards (`.*.*.`)
+  // are both matched. A `*` that is not a whole segment stays literal.
   if (property.includes('*')) {
     return property
       .slice(match.length + 1)
       .replace(/\[\*\]/g, '.*')
-      .replace(/\.\*(?=\.|$)/g, '.%');
+      .replace(/(^|\.)\*(?=\.|$)/g, '$1%');
   }
 
   return `${match}['${property.replace(new RegExp(`^${match}.`), '')}']`;

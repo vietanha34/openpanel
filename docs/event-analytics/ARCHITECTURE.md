@@ -78,8 +78,6 @@ type IEventAnalyticsMetricRow = {
 
 `sort` là string. `refineSort` chỉ chấp nhận `events` / `users` / `epu` hoặc một `metricKey` có trong `metrics` của chính request đó. Chuỗi bất kỳ bị từ chối ngay ở API.
 
-> Router còn procedure cũ `overview.eventAnalytics` (bảng phẳng trước T4). Không component nào gọi nữa — backlog K3 trong `ACCEPTANCE.md`.
-
 ### 2.2 Ngữ pháp độ sâu
 
 Tầng đếm từ event: **key = 1, value = 2, nested key = 3, value của nested key = 4** (`EVENT_ANALYTICS_MAX_DEPTH = 4`).
