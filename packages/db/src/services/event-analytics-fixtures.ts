@@ -50,6 +50,29 @@
  *
  * The missing-parameter case needs no new row: `payload.lives_left` already
  * sits on 4 of the 8 `level_start` events.
+ *
+ * ---------------------------------------------------------------------------
+ * Phase 3 additions (T9) -- additive, on the two days BEFORE the range above,
+ * so every T8/P8 number still holds
+ * ---------------------------------------------------------------------------
+ *
+ * Period A is the day above, `2024-03-04`. B is `2024-03-03` and C is
+ * `2024-03-02`, one day each, which is what invariant I10 requires.
+ *
+ *   event             A            B            C
+ *   level_start       8 / 4 users  4 / 3 users  1 / 1 user
+ *   level_finish      3 / 2        --           --
+ *   ads_inter_shown   2 / 2        --           --
+ *   booster_use       1 / 1        --           --
+ *   tutorial_step     --           1 / 1        --
+ *
+ * u1, u2 and u4 fire in more than one period, so per-period user counts can
+ * never be added up: `level_start` has 4 users in A and 3 in B, but only 5
+ * across both days.
+ *
+ * `level_finish` exists only in A, so its B and C numbers are all zero.
+ * `tutorial_step` exists only in B, which is how a row the baseline period
+ * never saw can be told apart from a row that is merely empty there.
  */
 
 import { TABLE_NAMES, ch } from '../clickhouse/client';
@@ -64,6 +87,21 @@ export const EVENT_ANALYTICS_FIXTURE = {
   },
   range: {
     startDate: '2024-03-04 00:00:00',
+    endDate: '2024-03-04 23:59:59',
+    timezone: 'UTC',
+  },
+  /**
+   * Comparison periods, baseline first. One day each, so the contract's
+   * equal-length rule (I10) holds.
+   */
+  periods: [
+    { startDate: '2024-03-04 00:00:00', endDate: '2024-03-04 23:59:59' },
+    { startDate: '2024-03-03 00:00:00', endDate: '2024-03-03 23:59:59' },
+    { startDate: '2024-03-02 00:00:00', endDate: '2024-03-02 23:59:59' },
+  ],
+  /** The three periods as one range, for the union counter-check. */
+  unionRange: {
+    startDate: '2024-03-02 00:00:00',
     endDate: '2024-03-04 23:59:59',
     timezone: 'UTC',
   },
@@ -143,12 +181,65 @@ export const EVENT_ANALYTICS_BLUEPRINT = {
     sum_param_user: 9.6, // 48/5
     uniq_param_user: 1, // 5/5
   },
+
+  /**
+   * Phase 3 comparison (spec 2026-09-18 §3 D1/D2). Numbers per period for the
+   * events that exist in more than one, read off the fixture table in the
+   * header. Index 0 is A, the baseline.
+   */
+  periods: {
+    levelStart: [
+      // A: the eight rows of the T8 table.
+      {
+        events: 8,
+        users: 4,
+        sum_level_id: 48,
+        avg_level_id: 6, // 48/8
+        sum_lives_left: 18,
+        avg_lives_left: 2.25, // 18/8, four events carry no parameter
+      },
+      // B: u1 twice, u2 and u5 once each. level_id 4, 7, 4, 10.
+      {
+        events: 4,
+        users: 3,
+        sum_level_id: 25,
+        avg_level_id: 6.25, // 25/4
+        sum_lives_left: 4, // 2 + 2, the other two rows have no parameter
+        avg_lives_left: 1, // 4/4, NOT 4/2 -- Phase 2 D4 still applies
+      },
+      // C: u4 once.
+      {
+        events: 1,
+        users: 1,
+        sum_level_id: 1,
+        avg_level_id: 1,
+        sum_lives_left: 0,
+        avg_lives_left: 0,
+      },
+    ],
+    /** Every event of the range, per period. */
+    totals: [
+      { events: 14, users: 5 },
+      { events: 5, users: 4 }, // 4 level_start + 1 tutorial_step; u1,u2,u5,u3
+      { events: 1, users: 1 },
+    ],
+    /**
+     * One query over 2024-03-02..04 as a single range. Strictly below the sum
+     * of the per-period counts, because the same users fire in several of them.
+     */
+    union: {
+      levelStartUsers: 5, // {u1,u2,u3,u4,u5}; per-period sum is 4+3+1 = 8
+      totalsUsers: 5, // per-period sum is 5+4+1 = 10
+    },
+  },
 } as const;
 
 type FixtureEvent = {
   user: string;
   name: string;
   properties: Record<string, string>;
+  /** Which comparison period the event lands in. Defaults to A. */
+  day?: '2024-03-04' | '2024-03-03' | '2024-03-02';
 };
 
 const { users } = EVENT_ANALYTICS_FIXTURE;
@@ -267,6 +358,50 @@ const FIXTURE_EVENTS: FixtureEvent[] = [
     name: 'booster_use',
     properties: { booster_id: 'hammer', app_version: '1.2.3' },
   },
+
+  // --- period B (2024-03-03) ----------------------------------------------
+  // u1 and u2 also fire in A, and u5 fires level_start only here although it
+  // exists in A under other events: per-period user counts must not add up.
+  {
+    user: users.u1,
+    name: 'level_start',
+    day: '2024-03-03',
+    properties: { level_id: '4', 'payload.lives_left': '2' },
+  },
+  {
+    user: users.u1,
+    name: 'level_start',
+    day: '2024-03-03',
+    // No `payload.lives_left`, so B has the missing-parameter case too.
+    properties: { level_id: '7' },
+  },
+  {
+    user: users.u2,
+    name: 'level_start',
+    day: '2024-03-03',
+    properties: { level_id: '4', 'payload.lives_left': '2' },
+  },
+  {
+    user: users.u5,
+    name: 'level_start',
+    day: '2024-03-03',
+    properties: { level_id: '10' },
+  },
+  {
+    user: users.u3,
+    // Fires in B and nowhere else: a row the baseline period never saw.
+    name: 'tutorial_step',
+    day: '2024-03-03',
+    properties: { step_index: '1' },
+  },
+
+  // --- period C (2024-03-02) ----------------------------------------------
+  {
+    user: users.u4,
+    name: 'level_start',
+    day: '2024-03-02',
+    properties: { level_id: '1' },
+  },
 ];
 
 /**
@@ -281,15 +416,11 @@ const FIXTURE_PROFILES: { user: string; plan: string }[] = [
   { user: users.u5, plan: 'free' },
 ];
 
-function buildEvents(projectId: string) {
-  return FIXTURE_EVENTS.map((event, index) => ({
-    id: `00000000-0000-4000-9000-${String(index + 1).padStart(12, '0')}`,
+/** The columns every fixture row shares, so the two fixtures cannot drift. */
+function buildEvent(projectId: string, seq: number) {
+  return {
+    id: `00000000-0000-4000-9000-${String(seq).padStart(12, '0')}`,
     project_id: projectId,
-    profile_id: event.user,
-    device_id: `dev-${event.user}`,
-    name: event.name,
-    session_id: `sess-${event.user}`,
-    created_at: '2024-03-04 12:00:00',
     path: '/',
     origin: 'https://example.com',
     referrer: '',
@@ -297,7 +428,6 @@ function buildEvents(projectId: string) {
     referrer_type: '',
     revenue: 0,
     duration: 0,
-    properties: event.properties,
     groups: [],
     country: 'US',
     city: '',
@@ -311,6 +441,18 @@ function buildEvents(projectId: string) {
     device: 'desktop',
     brand: '',
     model: '',
+  };
+}
+
+function buildEvents(projectId: string) {
+  return FIXTURE_EVENTS.map((event, index) => ({
+    ...buildEvent(projectId, index + 1),
+    profile_id: event.user,
+    device_id: `dev-${event.user}`,
+    name: event.name,
+    session_id: `sess-${event.user}`,
+    created_at: `${event.day ?? '2024-03-04'} 12:00:00`,
+    properties: event.properties,
   }));
 }
 
@@ -328,6 +470,38 @@ function buildProfiles(projectId: string) {
     created_at: '2024-03-04 00:00:00.000',
     last_seen_at: '2024-03-04 12:00:00.000',
   }));
+}
+
+/**
+ * A separate, tiny fixture for the timezone-boundary case (T9 / BUG 2). It uses
+ * its OWN project id on purpose: the 20:00 event sits inside period A's window
+ * once the range helper applies the timezone offset, so adding it to the shared
+ * fixture would move the T8/P8 numbers.
+ *
+ * The three rows are one event name at:
+ *   2024-03-03 20:00:00  -- late enough that a timezone shift moves it between
+ *                           period A and period B
+ *   2024-03-04 12:00:00  -- squarely inside period A either way
+ *   2024-03-01 12:00:00  -- outside both periods, so it must never be counted
+ */
+export async function setupEventAnalyticsBoundaryFixture(
+  projectId: string
+): Promise<void> {
+  await teardownEventAnalyticsFixtures(projectId);
+  const at = ['2024-03-03 20:00:00', '2024-03-04 12:00:00', '2024-03-01 12:00:00'];
+  await ch.insert({
+    table: TABLE_NAMES.events,
+    values: at.map((createdAt, index) => ({
+      ...buildEvent(projectId, index + 1),
+      profile_id: 'ea-tz-u1',
+      device_id: 'dev-ea-tz-u1',
+      session_id: 'sess-ea-tz-u1',
+      name: 'tz_boundary',
+      created_at: createdAt,
+      properties: {},
+    })),
+    format: 'JSONEachRow',
+  });
 }
 
 export async function setupEventAnalyticsFixtures(
