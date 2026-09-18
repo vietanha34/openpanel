@@ -18,6 +18,13 @@ import {
   cellStyle,
 } from './tree-nodes';
 import {
+  COMPARISON_COLUMN_PX,
+  COMPARISON_LABEL_PX,
+  comparisonColumns,
+  comparisonMinWidth,
+  comparisonTableCells,
+} from './comparison-columns';
+import {
   type TableSort,
   formatCount,
   metricColumnLabel,
@@ -61,6 +68,7 @@ export function EventTreeTable({
   showPct,
   onShowPctChange,
   selection,
+  compareCount,
 }: {
   input: EventAnalyticsRangeInput;
   /** One column per metric, in this order (design 2c). */
@@ -71,6 +79,8 @@ export function EventTreeTable({
   showPct: boolean;
   onShowPctChange: (showPct: boolean) => void;
   selection: TreeSelection;
+  /** Periods per metric; 1 outside comparison mode (design 3b). */
+  compareCount?: number;
 }) {
   const trpc = useTRPC();
   const [search, setSearch] = useState('');
@@ -79,7 +89,17 @@ export function EventTreeTable({
   // Every level asks for the same metrics, so the server fills `row.metrics`.
   const input = { ...rangeInput, metrics };
   const sort = resolveSort(storedSort, metrics);
-  const columnWidth = metricColumnWidth(metrics.length);
+  const periods = compareCount ?? 1;
+  const comparing = periods > 1;
+  // Design: comparison fixes the column at 118px and pins the name track at
+  // 300px, so 16 columns scroll instead of squeezing the labels to nothing.
+  const columnWidth = comparing
+    ? COMPARISON_COLUMN_PX
+    : metricColumnWidth(metrics.length);
+  const columns = comparing ? comparisonColumns(metrics, periods) : null;
+  const minWidth = comparing
+    ? comparisonMinWidth(metrics.length, periods)
+    : tableMinWidth(metrics.length);
 
   const listQuery = useInfiniteQuery(
     trpc.overview.eventAnalyticsList.infiniteQueryOptions(
@@ -109,6 +129,7 @@ export function EventTreeTable({
     input,
     metrics,
     columnWidth,
+    compareCount: periods,
     sort: sort.key,
     dir: sort.dir,
     showPct,
@@ -168,34 +189,52 @@ export function EventTreeTable({
       {/* Metric columns are fixed-width; below the track width the card
           scrolls horizontally instead of clipping the right-hand columns. */}
       <div className="overflow-x-auto">
-        <div style={{ minWidth: tableMinWidth(metrics.length) }}>
+        <div style={{ minWidth }}>
       <div className="flex min-h-[38px] items-center border-b bg-muted/40">
-        <div className="min-w-0 flex-1 pl-3.5 text-[11px] font-medium tracking-wide text-muted-foreground">
+        <div
+          className="min-w-0 pl-3.5 text-[11px] font-medium tracking-wide text-muted-foreground"
+          style={
+            comparing
+              ? { flex: `0 0 ${COMPARISON_LABEL_PX}px` }
+              : { flex: '1 1 auto' }
+          }
+        >
           EVENT › PROPERTY › VALUE › NESTED KEY
         </div>
-        {metrics.map((metric) => {
-          const key = metricKey(metric);
-          return (
-            <button
-              key={key}
-              type="button"
-              style={cellStyle(columnWidth)}
-              className={cn(
-                'flex shrink-0 items-center justify-end gap-[5px] py-1.5 pr-[18px] pl-1.5 text-[11px] font-medium tracking-wide hover:text-foreground',
-                sort.key === key ? 'text-foreground' : 'text-muted-foreground',
-              )}
-              onClick={() => onSortChange(nextSort(sort, key))}
-            >
+        {(columns ??
+          metrics.map((metric) => ({
+            key: metricKey(metric),
+            label: metricColumnLabel(metric),
+            sub: '',
+            sortKey: metricKey(metric),
+          }))
+        ).map((column) => (
+          <button
+            key={column.key}
+            type="button"
+            style={cellStyle(columnWidth)}
+            className={cn(
+              'flex shrink-0 flex-col items-end justify-center gap-0.5 py-1.5 pr-[18px] pl-1.5 text-[11px] font-medium tracking-wide hover:text-foreground',
+              sort.key === column.sortKey
+                ? 'text-foreground'
+                : 'text-muted-foreground',
+            )}
+            onClick={() => onSortChange(nextSort(sort, column.sortKey))}
+          >
+            <span className="row items-center gap-[5px]">
               {/* Long labels wrap rather than widen the column. */}
-              <span className="text-right leading-[1.3]">
-                {metricColumnLabel(metric)}
-              </span>
+              <span className="text-right leading-[1.3]">{column.label}</span>
               <span className="w-2 shrink-0 font-mono text-[10px]">
-                {sortArrow(sort, key)}
+                {sortArrow(sort, column.sortKey)}
               </span>
-            </button>
-          );
-        })}
+            </span>
+            {column.sub ? (
+              <span className="font-mono text-[10px] text-muted-foreground">
+                {column.sub}
+              </span>
+            ) : null}
+          </button>
+        ))}
       </div>
 
       <div className="flex h-[50px] items-center border-b bg-muted/60">
@@ -205,13 +244,23 @@ export function EventTreeTable({
             DEDUPLICATED
           </span>
         </div>
-        {metrics.map((metric) => (
-          <TotalsCell
-            key={metricKey(metric)}
-            width={columnWidth}
-            {...totalsCell(metric, totals)}
-          />
-        ))}
+        {comparing
+          ? comparisonTableCells(metrics, periods, totals, totals, showPct).map(
+              (cell) => (
+                <TotalsCell
+                  key={cell.column.key}
+                  width={columnWidth}
+                  {...cell.value}
+                />
+              ),
+            )
+          : metrics.map((metric) => (
+              <TotalsCell
+                key={metricKey(metric)}
+                width={columnWidth}
+                {...totalsCell(metric, totals)}
+              />
+            ))}
       </div>
 
       {/* Padded to 40px so the note starts under the row labels, not under the

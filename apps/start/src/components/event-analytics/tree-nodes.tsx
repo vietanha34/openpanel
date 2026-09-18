@@ -21,6 +21,11 @@ import { useInfiniteQuery } from '@tanstack/react-query';
 import { ChevronRight, Plus, RotateCw } from 'lucide-react';
 import { useState } from 'react';
 import {
+  type DeltaCell,
+  type DeltaTone,
+  comparisonTableCells,
+} from './comparison-columns';
+import {
   type TreeNodeKind,
   badgeFor,
   canExpand,
@@ -55,6 +60,11 @@ export type TreeContextValue = {
   /** Column order and width of the table (design 2c). */
   metrics: IEventAnalyticsMetric[];
   columnWidth: number;
+  /**
+   * Periods per metric in comparison mode, 1 otherwise. Every metric repeats
+   * once per period, and every column but A carries a delta (design 3b).
+   */
+  compareCount: number;
   sort: IEventAnalyticsSortKey;
   dir: IEventAnalyticsSortDir;
   showPct: boolean;
@@ -90,14 +100,23 @@ function selectedColor(selection: TreeSelection, path: string) {
   return selection.selected.find((item) => item.path === path)?.color ?? null;
 }
 
+const DELTA_TONE: Record<DeltaTone, string> = {
+  up: 'text-emerald-700',
+  down: 'text-red-600',
+  flat: 'text-muted-foreground',
+};
+
 function MetricCell({
   value,
   sub,
   width,
+  delta,
 }: {
   value: string;
   sub?: string | null;
   width: number;
+  /** Comparison only, and never on the baseline column. */
+  delta?: DeltaCell | null;
 }) {
   return (
     <div className={CELL} style={cellStyle(width)}>
@@ -105,6 +124,11 @@ function MetricCell({
       {sub ? (
         <div className="mt-0.5 font-mono text-[11px] text-muted-foreground">
           {sub}
+        </div>
+      ) : null}
+      {delta ? (
+        <div className={cn('mt-0.5 font-mono text-[11px]', DELTA_TONE[delta.tone])}>
+          {delta.text}
         </div>
       ) : null}
     </div>
@@ -214,13 +238,28 @@ function TreeRow({
           ) : null}
         </button>
       </div>
-      {ctx.metrics.map((column) => (
-        <MetricCell
-          key={metricKey(column)}
-          width={ctx.columnWidth}
-          {...metricCell(column, metric, ctx.totals, ctx.showPct)}
-        />
-      ))}
+      {ctx.compareCount > 1
+        ? comparisonTableCells(
+            ctx.metrics,
+            ctx.compareCount,
+            metric,
+            ctx.totals,
+            ctx.showPct,
+          ).map((cell) => (
+            <MetricCell
+              delta={cell.delta}
+              key={cell.column.key}
+              width={ctx.columnWidth}
+              {...cell.value}
+            />
+          ))
+        : ctx.metrics.map((column) => (
+            <MetricCell
+              key={metricKey(column)}
+              width={ctx.columnWidth}
+              {...metricCell(column, metric, ctx.totals, ctx.showPct)}
+            />
+          ))}
     </div>
   );
 }
