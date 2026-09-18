@@ -4,7 +4,7 @@ Date: 2026-09-18
 Base: `feature/event-analytics` @ `482b5e31`
 Requirements gốc: `/tmp/op-phase3/requirements.md` (nguyên văn của user, chép vào Appendix A)
 Design: Claude Design project `233791a0-310f-443c-8118-b345c9f77b7d`
-- `Event Analytics Comparison.dc.html` (7,311 bytes) — canvas 6 artboard `3a`–`3f`. Đã đọc đủ.
+- `Event Analytics Comparison.dc.html` (7,311 bytes) — canvas 6 artboard `3a`–`3f`. Đã đọc đủ. **Đây là canvas của Phase 3.** Đừng nhầm với `Event Analytics.dc.html` (canvas Phase 1, state `1a`–`1c`) hay `Event Analytics Metrics.dc.html` (Phase 2, `2a`–`2d`) — cùng thư mục, tên gần giống. Cũng đừng đọc bản trong `uploads/`, đó là bản import cũ.
 - `EventAnalyticsScreen.dc.html` (105,661 bytes, 1,494 dòng) — đã đọc: khối props, state compare, `periodWidths` / `periodOpacity` / `periodStart` / `periodDays`, `shiftDays` / `axisLabel` / `longDate` / `periodRange`, `deltaCell` / `compareCells` / `sortNodes` / `cellsFor`, `rowMinW`, pill chọn số period. **Chưa đọc hết**: phần markup vẽ SVG overlay/split và nav trái.
 
 Tiền nhiệm: spec Phase 1 (advanced filters), Phase 2 (metrics), và `docs/event-analytics/ARCHITECTURE.md` — 9 bất biến I1–I9 ở đó là ràng buộc của spec này.
@@ -250,7 +250,7 @@ Bám design 3a–3f và requirements §2, §4, §5, §6. Những điểm dễ l�
 | Task | Ưu tiên | Phạm vi |
 |---|---|---|
 | **T9 — Integration test nhiều period** | P3 | Fixture có user trùng giữa A và B; khẳng định `users` từng period **không** bằng tổng, và delta đúng |
-| **T10 — Soát thị giác** | P3 | Đối chiếu `render_preview` 3a–3f |
+| **T10 — Soát thị giác (task verify design cuối phase)** | P3 | Chạy app thật, đối chiếu `render_preview` TỪNG state 3a/3b/3c/3d/3e/3f, kèm ảnh so sánh từng state; kiểm cả phần persist của R3 §9 (reload giữ nguyên compare, compareCount, compareView, focusPeriod, range từng period, sortKey có hậu tố, metric đang plot); sửa lệch trong `apps/start/src/components/event-analytics/` |
 
 Conflict notes: T1 và T2 cùng sửa route, T1 merge trước. T5–T8 đều đụng route và `chart.tsx`: T5 → T7 → T8, T6 chạy song song được vì chỉ đụng bảng.
 
@@ -258,7 +258,9 @@ Conflict notes: T1 và T2 cùng sửa route, T1 merge trước. T5–T8 đều �
 
 Preamble chung:
 
-> Làm trên `feature/event-analytics`. Đọc `docs/superpowers/specs/2026-09-18-event-analytics-phase3-design.md` trước; §3, §4, §5 là ràng buộc, và 9 bất biến trong `docs/event-analytics/ARCHITECTURE.md` vẫn có hiệu lực. Requirements gốc ở Appendix A của spec. Design: project `233791a0-310f-443c-8118-b345c9f77b7d`, page `Event Analytics Comparison.dc.html` + `EventAnalyticsScreen.dc.html` (đọc bằng claude_design MCP). Dùng `superpowers:test-driven-development`. Theo `.claude/CLAUDE.md`; KHÔNG chạy `pnpm format`; chạy `pnpm codegen` trước typecheck; không commit `packages/geo/src/datacenter-asns.ts`. Typecheck hẹp `pnpm -F <package> typecheck`. Verify bằng output thật, đọc cả dòng `Test Files` lẫn `Tests`, báo test skip. `apps/start` không có setup React testing — logic phải nằm trong helper thuần và test ở đó. Chỉ commit file của task mình. Lệch spec thì dừng và báo, không tự sửa spec.
+> Làm trên `feature/event-analytics`. Đọc `docs/superpowers/specs/2026-09-18-event-analytics-phase3-design.md` trước; §3, §4, §5 là ràng buộc, và 9 bất biến trong `docs/event-analytics/ARCHITECTURE.md` vẫn có hiệu lực. Requirements gốc ở Appendix A của spec.
+>
+> **Nguồn design, đọc đúng file:** project `233791a0-310f-443c-8118-b345c9f77b7d`. Canvas của Phase 3 là `Event Analytics Comparison.dc.html` ở thư mục gốc — 6 state `3a` menu, `3b` active 2 period, `3c` chart + tooltip, `3d` chart collapsed, `3e` 4 period overlay, `3f` 4 period split. Component thật vẫn là `EventAnalyticsScreen.dc.html` (105KB) với props `comparisonStage` / `comparePeriods` / `compareView` / `chartTooltip` / `chartCollapsed`; canvas chỉ nhúng component ở các trạng thái đó. **Không** đọc `Event Analytics.dc.html` (canvas Phase 1, `1a`–`1c`) hay `Event Analytics Metrics.dc.html` (Phase 2, `2a`–`2d`), và **không** đọc bản trong `uploads/` (import cũ). Đọc bằng claude_design MCP. Dùng `superpowers:test-driven-development`. Theo `.claude/CLAUDE.md`; KHÔNG chạy `pnpm format`; chạy `pnpm codegen` trước typecheck; không commit `packages/geo/src/datacenter-asns.ts`. Typecheck hẹp `pnpm -F <package> typecheck`. Verify bằng output thật, đọc cả dòng `Test Files` lẫn `Tests`, báo test skip. `apps/start` không có setup React testing — logic phải nằm trong helper thuần và test ở đó. Chỉ commit file của task mình. Lệch spec thì dừng và báo, không tự sửa spec.
 
 **T1:**
 > Tách dãy chip filter xuống hàng riêng dưới hàng nút (§5.1). `AdvancedFiltersPanel` hiện render chip ngay dưới nút của nó — tách phần chip thành component riêng hoặc đưa lên route, sao cho hàng 1 chỉ còn nút và hàng 2 chỉ còn chip (cả chip phẳng của `OverviewFiltersButtons` lẫn chip của group). Giữ nguyên hành vi xoá chip và `Clear all`. Empty state `No property filters — showing all traffic` nằm ở hàng 2.
@@ -280,12 +282,18 @@ Preamble chung:
 
 **T6:**
 > Bảng comparison (§5.3, design 3b). `metrics × compareCount` cột, sub-header `SEGMENT A…D`, cột A chỉ giá trị, B–D thêm dòng Δ% với đúng bộ màu. Layout: cột tên `flex: 0 0 300px` không bao giờ bị bóp, vùng số `overflow-x: auto`, `row min-width = 300 + metrics * n * 118`, cột số 118px. Sort strip hậu tố period rồi sắp theo metric của A (§3 D7) — test khẳng định bấm cột B không đổi thứ tự dòng. Totals chia theo period kèm delta, một dòng `nowrap`. Footer bảng `Sep 12 — 18 vs Sep 5 — 11 vs …`.
+>
+> **Đọc TRỌN phần markup bảng của design**, gồm sub-header và khối layout: cột tên `flex: 0 0 300px`, cột số `118px`, `row min-width = 300 + metrics * n * 118`. Lệch spec thì dừng và báo.
 
 **T7:**
 > Chart overlay (§5.3, design 3c/3e). Gọi `ReportChart` thêm `n - 1` lần với ngày đã dịch (§3 D1 vế chart), xếp chồng theo **chỉ số bucket**. Nét theo bậc tuổi đúng số design, không phân biệt period bằng màu. Hàng `PERIODS` với isolate. Tooltip compare: Δ% đặt trước giá trị, width `200 + n*96`. Logic ghép series và tính Δ nằm trong helper thuần, test ở đó; phần vẽ để T10 soát.
+>
+> **Đọc TRỌN phần vẽ của design trước khi code.** Overlay nằm trong khối SVG của `EventAnalyticsScreen.dc.html`, và spec §0 ghi rõ khối đó chưa được đọc khi viết spec. Trích số đo vào plan của bạn: `periodWidths = [2.4, 1.9, 1.6, 1.4]`, `periodOpacity = [1, .68, .46, .30]`, dash `liền / 5 4 / 1 3 / 9 3 2 3`, isolate `2.6px` opacity 1 và `.12` cho phần còn lại, tooltip width `200 + n*96`. Số nào trong design khác spec thì DỪNG và báo, đừng tự chọn.
 
 **T8:**
 > Chart split (design 3f). Một panel mỗi period, `flex: 1 1 0`, cao 132px, **chung thang y với overlay** (cùng max trên mọi period), footer panel có tổng và Δ vs A, panel A ghi `baseline`, click panel quay về Overlay với `focusPeriod` đó.
+>
+> **Đọc TRỌN phần vẽ của design trước khi code**, gồm khối SVG panel split: chiều cao `132px`, `flex: 1 1 0`, và cách tính thang y dùng chung với overlay. Trích số đo vào plan; lệch spec thì dừng và báo.
 
 **T9:**
 > Mở rộng fixture ClickHouse: một user hoạt động ở **cả** A và B. Khẳng định `periods[0].users + periods[1].users` **khác** `uniqExact` trên khoảng hợp nhất, delta tính đúng, và `metrics` cấp cao nhất trùng `periods[0]`.

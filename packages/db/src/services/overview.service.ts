@@ -10,6 +10,7 @@ import {
   type IEventAnalyticsMetric,
   type IEventAnalyticsMetricRow,
   type IEventAnalyticsParentPathItem,
+  type IEventAnalyticsPeriod,
   type IEventAnalyticsSortKey,
   type IEventPropertyKeyRow,
   type IEventPropertyKeysOutput,
@@ -20,6 +21,7 @@ import {
   zEventAnalyticsSortDir,
   zEventAnalyticsSortKey,
   metricKey,
+  sortKeyWithoutPeriod,
   zTimeInterval,
 } from '@openpanel/validation';
 import sqlstring from 'sqlstring';
@@ -216,6 +218,11 @@ type IEventAnalyticsRangeQuery = {
   timezone: string;
   /** Metric columns to add. Absent means `events` and `users` only. */
   metrics?: IEventAnalyticsMetric[];
+  /**
+   * Comparison periods, baseline first. One period (or none) behaves exactly as
+   * before; more than one splits every aggregate per period.
+   */
+  periods?: IEventAnalyticsPeriod[];
 };
 
 export type IGetEventAnalyticsListInput = IEventAnalyticsRangeQuery &
@@ -237,7 +244,16 @@ function buildEventAnalyticsBaseQuery({
   startDate,
   endDate,
   timezone,
+  periods,
 }: IEventAnalyticsRangeQuery) {
+  // Comparison mode reads every period from ONE scan of their union; the
+  // per-period numbers come from the `*If` aggregates in the SELECT.
+  const comparison = comparisonPeriods(periods);
+  if (comparison) {
+    const union = eventAnalyticsPeriodUnion(comparison);
+    startDate = union.startDate;
+    endDate = union.endDate;
+  }
   return clix(ch, timezone)
     .from(TABLE_NAMES.events, false)
     .where('project_id', '=', projectId)
@@ -269,7 +285,14 @@ function escapeLikeTerm(term: string) {
  * See docs/superpowers/specs/2026-09-16-event-analytics-phase2-design.md §5.
  */
 export function eventAnalyticsMetricExpression(
-  metric: IEventAnalyticsMetric
+  metric: IEventAnalyticsMetric,
+  /**
+   * When set, every aggregate is restricted to this period with the `*If`
+   * family. Comparison mode scans the union of the periods once and splits the
+   * numbers here, so a user active in two periods is counted once in EACH —
+   * never once across the union (Phase 3 §3 D2).
+   */
+  periodCondition?: string
 ): string | null {
   const param = () => {
     if (!metric.param) {
@@ -282,22 +305,32 @@ export function eventAnalyticsMetricExpression(
     return `coalesce(toFloat64OrNull(properties[${sqlstring.escape(metric.param)}]), 0)`;
   };
 
+  const where = periodCondition;
+  const uniq = (expr: string) =>
+    where ? `uniqExactIf(${expr}, ${where})` : `uniqExact(${expr})`;
+  const total = (expr: string) =>
+    where ? `sumIf(${expr}, ${where})` : `sum(${expr})`;
+  const rows = () => (where ? `countIf(${where})` : 'count()');
+  const users = () => uniq('profile_id');
+
   switch (metric.id) {
     case 'uniq_param':
-      return `uniqExact(${param()})`;
+      return uniq(param());
     case 'sum_param':
-      return `sum(${param()})`;
+      return total(param());
     // Not `avg`: the denominator is every event in the node, written out so a
     // refactor cannot quietly narrow it to the events carrying the parameter.
     case 'avg_param':
-      return `sum(${param()}) / count()`;
+      return `${total(param())} / ${rows()}`;
     // Exact, so the median does not wobble between page loads.
     case 'median_param':
-      return `quantileExact(0.5)(${param()})`;
+      return where
+        ? `quantileExactIf(0.5)(${param()}, ${where})`
+        : `quantileExact(0.5)(${param()})`;
     case 'uniq_param_user':
-      return `uniqExact(${param()}) / uniqExact(profile_id)`;
+      return `${uniq(param())} / ${users()}`;
     case 'sum_param_user':
-      return `sum(${param()}) / uniqExact(profile_id)`;
+      return `${total(param())} / ${users()}`;
     default:
       return null;
   }
@@ -307,25 +340,112 @@ export function eventAnalyticsMetricExpression(
  * Metric keys such as `sum_param:day` carry free text, so the columns are
  * aliased by their position in the request instead.
  */
-function eventAnalyticsMetricAlias(index: number): string {
-  return `metric_${index}`;
+function eventAnalyticsMetricAlias(index: number, period?: number): string {
+  return period === undefined
+    ? `metric_${index}`
+    : `metric_${index}_p${period}`;
+}
+
+/**
+ * Comparison periods worth splitting the aggregates by: more than one. One
+ * period (or none) is an ordinary report and must emit today's SQL byte for
+ * byte, so everything below treats it as "no periods".
+ */
+function comparisonPeriods(
+  periods: IEventAnalyticsPeriod[] | undefined
+): IEventAnalyticsPeriod[] | undefined {
+  return periods && periods.length > 1 ? periods : undefined;
+}
+
+/** A select entry: a plain column string, or raw SQL the builder must not touch. */
+type SelectColumn = string | ReturnType<typeof clix.exp>;
+
+/** `created_at` inside one period, for the `*If` aggregates. */
+function eventAnalyticsPeriodCondition(period: IEventAnalyticsPeriod): string {
+  return `created_at BETWEEN toDateTime(${sqlstring.escape(period.startDate)}) AND toDateTime(${sqlstring.escape(period.endDate)})`;
+}
+
+/** The union of every period, so one scan covers them all. */
+export function eventAnalyticsPeriodUnion(
+  periods: IEventAnalyticsPeriod[]
+): { startDate: string; endDate: string } {
+  const starts = periods.map((period) => period.startDate).sort();
+  const ends = periods.map((period) => period.endDate).sort();
+  return {
+    startDate: starts[0] as string,
+    endDate: ends[ends.length - 1] as string,
+  };
+}
+
+/**
+ * `events` and `users` — the two columns every endpoint selects. Split per
+ * period in comparison mode, with the period index in the alias.
+ */
+function eventAnalyticsCoreSelects(
+  periods: IEventAnalyticsPeriod[] | undefined
+): SelectColumn[] {
+  const comparison = comparisonPeriods(periods);
+  if (!comparison) {
+    return ['count() AS events', 'uniqExact(profile_id) AS users'];
+  }
+
+  return comparison.flatMap<SelectColumn>((period, index) => {
+    const condition = eventAnalyticsPeriodCondition(period);
+    // clix.exp: a plain string column runs through escapeDate(), which would
+    // quote the date literals this condition already escaped and emit
+    // ''2026-09-12 00:00:00''. The builder's own comment calls that out.
+    return [
+      clix.exp(`countIf(${condition}) AS events_p${index}`),
+      clix.exp(`uniqExactIf(profile_id, ${condition}) AS users_p${index}`),
+    ];
+  });
+}
+
+/** The column a `sort` value orders by, accounting for comparison mode. */
+function eventAnalyticsCoreColumn(
+  column: 'events' | 'users',
+  periods: IEventAnalyticsPeriod[] | undefined
+): string {
+  return comparisonPeriods(periods) ? `${column}_p0` : column;
 }
 
 function eventAnalyticsMetricSelects(
-  metrics: IEventAnalyticsMetric[] | undefined
-): string[] {
-  return (metrics ?? []).flatMap((metric, index) => {
-    const expression = eventAnalyticsMetricExpression(metric);
-    return expression
-      ? [`${expression} AS ${eventAnalyticsMetricAlias(index)}`]
-      : [];
+  metrics: IEventAnalyticsMetric[] | undefined,
+  periods?: IEventAnalyticsPeriod[]
+): SelectColumn[] {
+  const comparison = comparisonPeriods(periods);
+
+  return (metrics ?? []).flatMap<SelectColumn>((metric, index) => {
+    if (!comparison) {
+      const expression = eventAnalyticsMetricExpression(metric);
+      return expression
+        ? [`${expression} AS ${eventAnalyticsMetricAlias(index)}`]
+        : [];
+    }
+
+    return comparison.flatMap<SelectColumn>((period, periodIndex) => {
+      const expression = eventAnalyticsMetricExpression(
+        metric,
+        eventAnalyticsPeriodCondition(period)
+      );
+      // clix.exp for the same reason as in eventAnalyticsCoreSelects.
+      return expression
+        ? [
+            clix.exp(
+              `${expression} AS ${eventAnalyticsMetricAlias(index, periodIndex)}`
+            ),
+          ]
+        : [];
+    });
   });
 }
 
 /** Reads the aliased metric columns back, keyed by `metricKey`. */
 function toEventAnalyticsMetrics(
   row: Record<string, unknown> | undefined,
-  metrics: IEventAnalyticsMetric[] | undefined
+  metrics: IEventAnalyticsMetric[] | undefined,
+  /** Which period's columns to read; omitted outside comparison mode. */
+  period?: number
 ): Pick<IEventAnalyticsMetricRow, 'metrics'> {
   if (!metrics) {
     return {};
@@ -335,11 +455,59 @@ function toEventAnalyticsMetrics(
     if (eventAnalyticsMetricExpression(metric)) {
       // A per-user ratio over an empty range divides by zero users.
       values[metricKey(metric)] = toFiniteCount(
-        row?.[eventAnalyticsMetricAlias(index)] as number | string | undefined
+        row?.[eventAnalyticsMetricAlias(index, period)] as
+          | number
+          | string
+          | undefined
       );
     }
   }
   return { metrics: values };
+}
+
+/**
+ * The per-period half of a row: `events`, `users` and the metrics of each
+ * requested period, baseline first. Empty outside comparison mode, so the
+ * response shape is unchanged for every existing caller.
+ */
+function toEventAnalyticsPeriods(
+  row: Record<string, unknown> | undefined,
+  metrics: IEventAnalyticsMetric[] | undefined,
+  periods: IEventAnalyticsPeriod[] | undefined
+): Pick<IEventAnalyticsMetricRow, 'periods'> {
+  const comparison = comparisonPeriods(periods);
+  if (!comparison) {
+    return {};
+  }
+
+  return {
+    periods: comparison.map((_period, index) => ({
+      events: toFiniteCount(row?.[`events_p${index}`] as number | string),
+      users: toFiniteCount(row?.[`users_p${index}`] as number | string),
+      ...toEventAnalyticsMetrics(row, metrics, index),
+    })),
+  };
+}
+
+/**
+ * One row as the API returns it. In comparison mode the top-level fields repeat
+ * period A, so a reader that knows nothing about periods still gets the
+ * baseline rather than a number summed across them.
+ */
+function toEventAnalyticsRow(
+  row: Record<string, unknown> | undefined,
+  metrics: IEventAnalyticsMetric[] | undefined,
+  periods: IEventAnalyticsPeriod[] | undefined
+): IEventAnalyticsMetricRow {
+  const comparison = comparisonPeriods(periods);
+  const baseline = comparison ? '_p0' : '';
+
+  return {
+    events: toFiniteCount(row?.[`events${baseline}`] as number | string),
+    users: toFiniteCount(row?.[`users${baseline}`] as number | string),
+    ...toEventAnalyticsMetrics(row, metrics, comparison ? 0 : undefined),
+    ...toEventAnalyticsPeriods(row, metrics, periods),
+  };
 }
 
 /**
@@ -349,28 +517,37 @@ function toEventAnalyticsMetrics(
  */
 function eventAnalyticsSortColumn(
   sort: IEventAnalyticsSortKey,
-  metrics: IEventAnalyticsMetric[] | undefined
+  metrics: IEventAnalyticsMetric[] | undefined,
+  periods?: IEventAnalyticsPeriod[]
 ): string {
+  // Clicking period B's column still sorts by that metric of period A, so the
+  // rows keep one order across every period (Phase 3 §3 D7).
+  sort = sortKeyWithoutPeriod(sort);
+
   switch (sort) {
     // `pctu` is users / totals.users and `epau` is events / totals.users. The
     // denominator is the same for every row of one query, so sorting by the
     // numerator gives the identical order without computing the ratio.
     case 'events':
     case 'epau':
-      return 'events';
+      return eventAnalyticsCoreColumn('events', periods);
     case 'users':
     case 'pctu':
-      return 'users';
+      return eventAnalyticsCoreColumn('users', periods);
     case 'epu':
-      return 'events / users';
+      return `${eventAnalyticsCoreColumn('events', periods)} / ${eventAnalyticsCoreColumn('users', periods)}`;
   }
   const index = (metrics ?? []).findIndex(
     (metric) => metricKey(metric) === sort
   );
   const metric = metrics?.[index];
-  return metric && eventAnalyticsMetricExpression(metric)
-    ? eventAnalyticsMetricAlias(index)
-    : 'events';
+  if (!(metric && eventAnalyticsMetricExpression(metric))) {
+    return eventAnalyticsCoreColumn('events', periods);
+  }
+  // Always period A's column, for the same reason as above.
+  return comparisonPeriods(periods)
+    ? eventAnalyticsMetricAlias(index, 0)
+    : eventAnalyticsMetricAlias(index);
 }
 
 export function buildEventAnalyticsListQuery({
@@ -384,13 +561,12 @@ export function buildEventAnalyticsListQuery({
   const query = buildEventAnalyticsBaseQuery(range)
     .select<IEventAnalyticsListRow>([
       'name',
-      'count() AS events',
-      'uniqExact(profile_id) AS users',
-      ...eventAnalyticsMetricSelects(range.metrics),
+      ...eventAnalyticsCoreSelects(range.periods),
+      ...eventAnalyticsMetricSelects(range.metrics, range.periods),
     ])
     .groupBy(['name'])
     .orderBy(
-      eventAnalyticsSortColumn(sort, range.metrics),
+      eventAnalyticsSortColumn(sort, range.metrics, range.periods),
       dir === 'asc' ? 'ASC' : 'DESC'
     )
     .orderBy('name', 'ASC')
@@ -411,9 +587,8 @@ export function buildEventAnalyticsTotalsQuery(
   input: IGetEventAnalyticsTotalsInput
 ) {
   return buildEventAnalyticsBaseQuery(input).select<IEventAnalyticsMetricRow>([
-    'count() AS events',
-    'uniqExact(profile_id) AS users',
-    ...eventAnalyticsMetricSelects(input.metrics),
+    ...eventAnalyticsCoreSelects(input.periods),
+    ...eventAnalyticsMetricSelects(input.metrics, input.periods),
   ]);
 }
 
@@ -537,7 +712,13 @@ export function toEventPropertyKeyRows(
     cursor = 0,
     limit,
     metrics,
-  }: { cursor?: number; limit: number; metrics?: IEventAnalyticsMetric[] }
+    periods,
+  }: {
+    cursor?: number;
+    limit: number;
+    metrics?: IEventAnalyticsMetric[];
+    periods?: IEventAnalyticsPeriod[];
+  }
 ): IEventPropertyKeysOutput {
   const hasMore = sqlRows.length > limit;
   const rows: IEventPropertyKeyRow[] = sqlRows
@@ -546,12 +727,10 @@ export function toEventPropertyKeyRows(
       const isObject = Number(row.has_nested) > 0;
       return {
         key: row.key,
-        events: Number(row.events),
-        users: Number(row.users),
         kind: isObject ? 'obj' : 'key',
         // PA1: a leaf key is numeric only when every value parsed as a number.
         type: isObject ? 'unknown' : Number(row.non_numeric) === 0 ? 'num' : 'str',
-        ...toEventAnalyticsMetrics(row, metrics),
+        ...toEventAnalyticsRow(row, metrics, periods),
       };
     });
 
@@ -585,6 +764,7 @@ export type IGetEventPropertyValuesInput = z.infer<
 > & {
   timezone: string;
   metrics?: IEventAnalyticsMetric[];
+  periods?: IEventAnalyticsPeriod[];
 };
 
 /** ClickHouse returns the aggregates as strings. */
@@ -634,16 +814,15 @@ export function buildEventPropertyValuesQuery({
     .with('value_totals', valueTotals)
     .select([
       `${valueExpression} AS value`,
-      'count() AS events',
-      'uniqExact(profile_id) AS users',
+      ...eventAnalyticsCoreSelects(range.periods),
       'total_distinct',
-      ...eventAnalyticsMetricSelects(range.metrics),
+      ...eventAnalyticsMetricSelects(range.metrics, range.periods),
     ])
     .from('base_values')
     .crossJoin('value_totals')
     .groupBy(['value', 'total_distinct'])
     .orderBy(
-      eventAnalyticsSortColumn(sort, range.metrics),
+      eventAnalyticsSortColumn(sort, range.metrics, range.periods),
       dir === 'asc' ? 'ASC' : 'DESC'
     )
     .orderBy(tieBreaker, 'ASC')
@@ -1925,9 +2104,7 @@ export class OverviewService {
     return {
       rows: rows.slice(0, input.limit).map((row) => ({
         name: row.name,
-        events: toFiniteCount(row.events),
-        users: toFiniteCount(row.users),
-        ...toEventAnalyticsMetrics(row, input.metrics),
+        ...toEventAnalyticsRow(row, input.metrics, input.periods),
       })),
       nextCursor: hasNextPage ? cursor + input.limit : null,
     };
@@ -1938,11 +2115,7 @@ export class OverviewService {
   ): Promise<IEventAnalyticsMetricRow> {
     const [totals] = await buildEventAnalyticsTotalsQuery(input).execute();
 
-    return {
-      events: toFiniteCount(totals?.events),
-      users: toFiniteCount(totals?.users),
-      ...toEventAnalyticsMetrics(totals, input.metrics),
-    };
+    return toEventAnalyticsRow(totals, input.metrics, input.periods);
   }
 
   async getEventPropertyKeys(
@@ -1968,9 +2141,7 @@ export class OverviewService {
     const page = hasMore ? fetched.slice(0, input.limit) : fetched;
     const rows = page.map((row) => ({
       value: row.value,
-      events: Number(row.events),
-      users: Number(row.users),
-      ...toEventAnalyticsMetrics(row, input.metrics),
+      ...toEventAnalyticsRow(row, input.metrics, input.periods),
     }));
 
     if (!hasMore) {
