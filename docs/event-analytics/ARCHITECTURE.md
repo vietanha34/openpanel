@@ -1,6 +1,6 @@
 # Event Analytics — Kiến trúc và use case
 
-Nhánh: `feature/event-analytics` @ `69dc1f4d`
+Nhánh: `feature/event-analytics` @ `1b80807b` (sau PR #49)
 Biên bản nghiệm thu đi kèm: [`ACCEPTANCE.md`](./ACCEPTANCE.md)
 
 > **Mọi đoạn SQL trong tài liệu này là output thật.** Chúng được lấy ngày 2026-09-17 bằng cách gọi đúng builder rồi `.toSQL()` (hoặc `await getChartSql(...)`) với tham số ghi ở từng ca, không chép tay. Khi code đổi, chạy lại để cập nhật, đừng sửa SQL bằng tay. Project id `demo`, khoảng thời gian `2026-09-01 00:00:00` → `2026-09-07 23:59:59`, timezone `UTC`.
@@ -12,6 +12,7 @@ flowchart TD
   R["Route<br/>apps/start/src/routes/_app.$organizationId.$projectId.events._tabs.analytics.tsx"]
   P["useEventAnalyticsPrefs(projectId)<br/>apps/start/src/hooks/use-event-analytics-prefs.ts"]
   Q["useEventQueryFilters / useEventQueryFilterGroup<br/>(URL: f, fg)"]
+  CMP["comparison-state.ts + comparison-toolbar.tsx<br/>(URL: cmp, cmpn, cmpv, cmpf)"]
   T["EventTreeTable + tree-nodes.tsx<br/>(useInfiniteQuery, enabled khi node mở)"]
   C["EventAnalyticsChart<br/>chart.tsx → chart-input.ts"]
   OR["tRPC overview router<br/>packages/trpc/src/routers/overview.ts"]
@@ -26,6 +27,9 @@ flowchart TD
   R --> P
   P <--> LS
   R --> Q
+  R --> CMP
+  CMP -->|periods| T
+  CMP -->|n query da dich ngay| C
   R --> T
   R --> C
   T -->|4 procedure| OR --> OS --> CH
@@ -33,6 +37,8 @@ flowchart TD
   RC -->|bar| CR
   CR --> EN --> CS --> CH
 ```
+
+Comparison cắt ngang cả hai nhánh: trạng thái nằm trên URL, bảng nhận thêm `periods` trong cùng một request, còn chart gọi thêm `n - 1` lượt với ngày đã dịch (§3g, §3h).
 
 Hai nhánh cùng đọc **một tập event đã lọc**:
 
@@ -70,11 +76,18 @@ Mọi input kế thừa `zEventAnalyticsRange`:
 
 ```ts
 type IEventAnalyticsMetricRow = {
-  events: number;                     // luôn có
-  users: number;                      // luôn có
+  events: number;                     // luôn có — trong comparison là period A
+  users: number;                      // luôn có — trong comparison là period A
   metrics?: Record<string, number>;   // theo metricKey, chỉ các metric được yêu cầu
+  periods?: Array<{                   // chỉ khi request gửi > 1 period
+    events: number;
+    users: number;
+    metrics?: Record<string, number>;
+  }>;
 };
 ```
+
+`periods[0]` lặp lại đúng ba trường đầu, nên mọi reader viết trước Phase 3 vẫn đọc được số của baseline mà không cần biết comparison tồn tại.
 
 `sort` là string. `refineSort` chỉ chấp nhận `events` / `users` / `epu` hoặc một `metricKey` có trong `metrics` của chính request đó. Chuỗi bất kỳ bị từ chối ngay ở API.
 
@@ -365,6 +378,74 @@ SELECT 'level_start' as label_0, '2026-09-01 00:00:00' as date, sum(coalesce(toF
 - **Một bucket cho mỗi serie**, phủ cả khoảng thời gian: `GROUP BY label_0`, không group theo interval, `date` là hằng.
 - `format.ts` tính tổng của serie bằng cách **cộng các bucket**. Cách đó chỉ đúng với metric additive. Với `epu`, average, ratio per-user, tổng vẫn đúng **chỉ vì** chỉ có một bucket. `event-analytics-aggregate-bucket.test.ts` ghim bất biến này: nếu query aggregate bắt đầu group theo interval, test đỏ trước khi tổng âm thầm thành tổng các tỷ số.
 
+### 3g. Comparison — nhiều period trong một query
+
+**Ai gọi:** `EventTreeTable` và các node của cây, khi comparison bật
+**Client:** `comparison-state.ts` (`periodsForRequest`) và `periods.ts` (`periodsFrom`) sinh mảng `periods`, baseline đứng đầu
+**Server:** `eventAnalyticsCoreSelects`, `eventAnalyticsMetricSelects`, `eventAnalyticsPeriodCondition`, `eventAnalyticsPeriodHaving`, `eventAnalyticsPeriodCarrier` (`overview.service.ts`)
+
+Bảng, `periods` = 2 tuần, `sort: 'events'`, `dir: 'desc'`, `limit: 10`:
+
+```sql
+SELECT name, countIf(created_at BETWEEN toDateTime('2026-09-12 00:00:00') AND toDateTime('2026-09-18 23:59:59')) AS events_p0, uniqExactIf(profile_id, created_at BETWEEN toDateTime('2026-09-12 00:00:00') AND toDateTime('2026-09-18 23:59:59')) AS users_p0, countIf(created_at BETWEEN toDateTime('2026-09-05 00:00:00') AND toDateTime('2026-09-11 23:59:59')) AS events_p1, uniqExactIf(profile_id, created_at BETWEEN toDateTime('2026-09-05 00:00:00') AND toDateTime('2026-09-11 23:59:59')) AS users_p1 FROM events WHERE project_id = 'demo' AND created_at BETWEEN toDateTime('2026-09-05 00:00:00') AND toDateTime('2026-09-18 23:59:59') GROUP BY name HAVING events_p0 > 0 ORDER BY events_p0 DESC, name ASC LIMIT 11 OFFSET 0
+```
+
+Cùng request nhưng có metric theo parameter và **bấm sort ở cột period B** (`sort: 'sum_param:coins:B'`):
+
+```sql
+SELECT name, countIf(created_at BETWEEN toDateTime('2026-09-12 00:00:00') AND toDateTime('2026-09-18 23:59:59')) AS events_p0, uniqExactIf(profile_id, created_at BETWEEN toDateTime('2026-09-12 00:00:00') AND toDateTime('2026-09-18 23:59:59')) AS users_p0, countIf(created_at BETWEEN toDateTime('2026-09-05 00:00:00') AND toDateTime('2026-09-11 23:59:59')) AS events_p1, uniqExactIf(profile_id, created_at BETWEEN toDateTime('2026-09-05 00:00:00') AND toDateTime('2026-09-11 23:59:59')) AS users_p1, sumIf(coalesce(toFloat64OrNull(properties['coins']), 0), created_at BETWEEN toDateTime('2026-09-12 00:00:00') AND toDateTime('2026-09-18 23:59:59')) AS metric_1_p0, sumIf(coalesce(toFloat64OrNull(properties['coins']), 0), created_at BETWEEN toDateTime('2026-09-05 00:00:00') AND toDateTime('2026-09-11 23:59:59')) AS metric_1_p1, sumIf(coalesce(toFloat64OrNull(properties['coins']), 0), created_at BETWEEN toDateTime('2026-09-12 00:00:00') AND toDateTime('2026-09-18 23:59:59')) / countIf(created_at BETWEEN toDateTime('2026-09-12 00:00:00') AND toDateTime('2026-09-18 23:59:59')) AS metric_2_p0, sumIf(coalesce(toFloat64OrNull(properties['coins']), 0), created_at BETWEEN toDateTime('2026-09-05 00:00:00') AND toDateTime('2026-09-11 23:59:59')) / countIf(created_at BETWEEN toDateTime('2026-09-05 00:00:00') AND toDateTime('2026-09-11 23:59:59')) AS metric_2_p1 FROM events WHERE project_id = 'demo' AND created_at BETWEEN toDateTime('2026-09-05 00:00:00') AND toDateTime('2026-09-18 23:59:59') GROUP BY name HAVING events_p0 > 0 ORDER BY metric_1_p0 DESC, name ASC LIMIT 11 OFFSET 0
+```
+
+Totals:
+
+```sql
+SELECT countIf(created_at BETWEEN toDateTime('2026-09-12 00:00:00') AND toDateTime('2026-09-18 23:59:59')) AS events_p0, uniqExactIf(profile_id, created_at BETWEEN toDateTime('2026-09-12 00:00:00') AND toDateTime('2026-09-18 23:59:59')) AS users_p0, countIf(created_at BETWEEN toDateTime('2026-09-05 00:00:00') AND toDateTime('2026-09-11 23:59:59')) AS events_p1, uniqExactIf(profile_id, created_at BETWEEN toDateTime('2026-09-05 00:00:00') AND toDateTime('2026-09-11 23:59:59')) AS users_p1 FROM events WHERE project_id = 'demo' AND created_at BETWEEN toDateTime('2026-09-05 00:00:00') AND toDateTime('2026-09-18 23:59:59')
+```
+
+Property keys — ba CTE, xem ghi chú bên dưới:
+
+```sql
+WITH base_events AS (SELECT profile_id, properties, created_at FROM events WHERE project_id = 'demo' AND created_at BETWEEN toDateTime('2026-09-05 00:00:00') AND toDateTime('2026-09-18 23:59:59') AND name = 'level_start'), matched_keys AS (SELECT profile_id, properties, arrayFilter(k -> startsWith(k, ''), mapKeys(properties)) AS matched, created_at FROM base_events), segments AS (SELECT profile_id, properties, matched, arrayJoin(arrayDistinct(arrayMap(k -> splitByChar('.', substring(k, length('') + 1))[1], matched))) AS segment, created_at FROM matched_keys WHERE notEmpty(matched)) SELECT segment AS key, countIf(created_at BETWEEN toDateTime('2026-09-12 00:00:00') AND toDateTime('2026-09-18 23:59:59')) AS events_p0, uniqExactIf(profile_id, created_at BETWEEN toDateTime('2026-09-12 00:00:00') AND toDateTime('2026-09-18 23:59:59')) AS users_p0, countIf(created_at BETWEEN toDateTime('2026-09-05 00:00:00') AND toDateTime('2026-09-11 23:59:59')) AS events_p1, uniqExactIf(profile_id, created_at BETWEEN toDateTime('2026-09-05 00:00:00') AND toDateTime('2026-09-11 23:59:59')) AS users_p1, max(arrayExists(k -> startsWith(k, concat('', segment, '.')), matched)) AS has_nested, countIf(properties[concat('', segment)] != '' AND toFloat64OrNull(properties[concat('', segment)]) IS NULL) AS non_numeric FROM segments GROUP BY segment HAVING events_p0 > 0 ORDER BY events_p0 DESC, key ASC LIMIT 21 OFFSET 0
+```
+
+Property values:
+
+```sql
+WITH base_values AS (SELECT properties, profile_id, created_at FROM events WHERE project_id = 'demo' AND created_at BETWEEN toDateTime('2026-09-05 00:00:00') AND toDateTime('2026-09-18 23:59:59') AND name = 'level_start' AND mapContains(properties, 'level_id')), value_totals AS (SELECT uniqExact(properties['level_id']) AS total_distinct FROM base_values) SELECT properties['level_id'] AS value, countIf(created_at BETWEEN toDateTime('2026-09-12 00:00:00') AND toDateTime('2026-09-18 23:59:59')) AS events_p0, uniqExactIf(profile_id, created_at BETWEEN toDateTime('2026-09-12 00:00:00') AND toDateTime('2026-09-18 23:59:59')) AS users_p0, countIf(created_at BETWEEN toDateTime('2026-09-05 00:00:00') AND toDateTime('2026-09-11 23:59:59')) AS events_p1, uniqExactIf(profile_id, created_at BETWEEN toDateTime('2026-09-05 00:00:00') AND toDateTime('2026-09-11 23:59:59')) AS users_p1, total_distinct FROM base_values CROSS JOIN value_totals  GROUP BY value, total_distinct HAVING events_p0 > 0 ORDER BY events_p0 DESC, toFloat64OrNull(value) ASC LIMIT 6 OFFSET 0
+```
+
+Điểm ngữ nghĩa:
+
+- **Một lần quét, không phải n lần.** `WHERE created_at BETWEEN` bao **hợp** của mọi period; từng period tách ra bằng `countIf` / `uniqExactIf` / `sumIf` / `quantileExactIf`. Đây là lý do bảng nới contract thay vì client gọi 4 lượt (spec Phase 3 §3 D1).
+- **Tập dòng theo period A.** `HAVING events_p0 > 0` chạy **trước** `ORDER BY`, `LIMIT`, `OFFSET`. Thiếu nó, một event chỉ period B thấy vẫn thành dòng với cột baseline rỗng, và còn chiếm chỗ trong trang làm phân trang lệch.
+- **`ORDER BY` luôn là cột của A** (`events_p0`, `metric_2_p0`). Bấm cột period B vẫn sắp theo metric ấy của A, nên thứ tự dòng không đổi khi nhảy giữa các cột period; `sortKeyWithoutPeriod` strip hậu tố `:A|:B|:C|:D` ở tầng validation.
+- **`users` tính riêng từng period** bằng `uniqExactIf(profile_id, <period k>)`. Một user hoạt động ở cả A và B được đếm một lần **ở mỗi period**, và hai số đó **không** cộng thành `uniqExact` trên khoảng hợp nhất. Đây là bất biến I2 chiếu sang trục period.
+- **Mọi mốc thời gian đi qua một phép chuyển duy nhất.** `eventAnalyticsPeriodCondition` dùng `clix.datetime` y như khoảng bao. Viết chuỗi local thô ở đây từng làm một event nằm trong range mà rơi ra ngoài period A ở múi giờ UTC+7 — hai hệ thời gian trong một query.
+- **CTE phải mang `created_at`.** Aggregate theo period đọc `created_at` ở SELECT ngoài cùng, cách bảng events vài tầng CTE, mà một CTE chỉ lộ ra cột nó select. Query keys nối **ba** CTE (`base_events` → `matched_keys` → `segments`) nên cả ba mang cột; query values nối một. `eventAnalyticsPeriodCarrier` chỉ thêm cột **khi có comparison**, nên SQL không `periods` vẫn byte-identical.
+- **`periods[0]` trùng bộ số phẳng.** `toEventAnalyticsRow` đọc `events_p0` / `users_p0` / `metric_<i>_p0` vào đúng các trường cũ, nên reader không biết gì về period vẫn nhận số của baseline chứ không phải số gộp.
+
+### 3h. Chart comparison — n query, ghép ở client
+
+**Ai gọi:** `EventAnalyticsChart`
+**Hàm:** `mergeComparisonSeries`, `periodLineStyle`, `overlayScale`, `legendRows`, `tooltipWidth`, `tooltipAnchor`, `axisLabels`, `buildSplitPanels` (`comparison-chart.ts`)
+
+Chart **không** đổi contract. Panel gọi `ReportChart` thêm `n - 1` lần với ngày đã dịch, rồi xếp chồng ở client theo **chỉ số bucket**. Khác bảng ở hai điểm: chart không phân trang nên không có bài toán căn dòng, và engine chỉ biết đúng một `previous` period — vùng dùng chung với mọi report khác (spec Phase 3 §3 D1).
+
+Số đo lấy từ design, khai trong `comparison-chart.ts`:
+
+| Hằng | Giá trị | Ý nghĩa |
+|---|---|---|
+| `PERIOD_WIDTHS` | `[2.4, 1.9, 1.6, 1.4]` | nét mảnh dần theo tuổi period |
+| `PERIOD_OPACITY` | `[1, 0.68, 0.46, 0.3]` | mờ dần theo tuổi |
+| `PERIOD_DASHES` | `['0', '5 4', '1 3', '9 3 2 3']` | A liền, còn lại đứt dần |
+| `ISOLATED_WIDTH` / `DIMMED_OPACITY` | `2.6` / `0.12` | khi isolate một period |
+| `OVERLAY_WIDTH` / `OVERLAY_HEIGHT` | `1000` / `236` | khung overlay |
+| `SPLIT_HEIGHT` | `132` | chiều cao mỗi panel split |
+| `tooltipWidth(n)` | `200 + n * 96` | nhãn cộng một cột mỗi period |
+| `AXIS_LABEL_MAX` | `12` | số nhãn trục tối đa trước khi thưa bớt |
+
+**Period phân biệt bằng nét và độ mờ, không bằng màu** — màu đã mã hoá series. Đó cũng là lý do có Split view và nút isolate: từ 3 period trở lên, riêng dash không đủ đọc.
+
 ## 4. Quy tắc ngữ nghĩa bất biến
 
 | # | Quy tắc | Ở đâu | Test ghim |
@@ -377,6 +458,10 @@ SELECT 'level_start' as label_0, '2026-09-01 00:00:00' as date, sum(coalesce(toF
 | I6 | **Profile filter qua subselect, không qua CTE join** | `compileEventAnalyticsFilter` | `event-analytics-filters.test.ts`, `chart-filter-group-parity.test.ts` |
 | I7 | **Aggregate chart trả một bucket cho mỗi serie** | `getAggregateChartSql` | `event-analytics-aggregate-bucket.test.ts` |
 | I8 | **Mẫu số cấp query không tính trong `GROUP BY` theo node** (`pctu`, `epau`) | renderer bảng, `eventAnalyticsSortColumn` | `event-analytics-sort-mapping.test.ts` |
+| I10 | **Mọi period trong một lần so sánh có cùng số ngày.** Chặn ở UI (`baselinePeriod` trả `null` cho range không có số ngày cố định; date picker của chip chỉ đổi vị trí) **và** ở contract | `comparison-state.ts`, `superRefine` của `periods` | `comparison-state.test.ts`, `event-analytics-periods.test.ts` |
+| I11 | **Tập dòng của comparison theo period A**, và `ORDER BY` luôn là cột của A | `eventAnalyticsPeriodHaving`, `eventAnalyticsSortColumn` | `event-analytics-periods.test.ts`, `event-analytics-property-periods.test.ts` |
+| I12 | **Một query, một hệ thời gian.** Mốc của period và mốc của khoảng bao đi qua cùng `clix.datetime` | `eventAnalyticsPeriodCondition` | `event-analytics-periods-sql.test.ts` |
+| I13 | **Endpoint nào nhận `periods` cũng phải có test CHẠY THẬT trên ClickHouse.** Test khẳng định chuỗi SQL không thấy được `Unknown identifier` | — | `event-analytics-periods.test.ts`, `event-analytics-property-periods.test.ts` |
 | I9 | **Không có group → SQL byte-identical** với đường phẳng, cho mọi caller không phải Event Analytics | `getEventAnalyticsWhereClause`, `getChartSql` | `event-analytics-group-sql.test.ts`, `chart-filter-group-sql.test.ts`, `chart-segment-sql.test.ts` (snapshot) |
 
 ## 5. Bản đồ file
@@ -395,7 +480,15 @@ SELECT 'level_start' as label_0, '2026-09-01 00:00:00' as date, sum(coalesce(toF
 | Router chart | `packages/trpc/src/routers/chart.ts` | `chart`, `aggregate` |
 | Route | `apps/start/src/routes/_app.$organizationId.$projectId.events._tabs.analytics.tsx` | component `EventAnalytics` |
 | Bảng cây | `apps/start/src/components/event-analytics/` | `event-tree-table.tsx`, `tree-nodes.tsx`, `tree-utils.ts` |
-| Chart | `apps/start/src/components/event-analytics/` | `chart.tsx`, `chart-input.ts` (`buildEventAnalyticsChartInput`, `chartSegmentFor`, `resolveChartMetric`), `chart-cold-start.ts` (`coldStartSelection`) |
+| Chart | `apps/start/src/components/event-analytics/` | `chart.tsx`, `chart-input.ts` (`buildEventAnalyticsChartInput`, `chartSegmentFor`, `resolveChartMetric`), `chart-cold-start.ts` (`coldStartSelection`, `coldStartTrigger`) |
+| Comparison — trạng thái | `apps/start/src/components/event-analytics/comparison-state.ts` | `defaultComparison`, `startComparison`, `setCompareCount`, `addPeriod`, `removePeriod`, `toggleFocusPeriod`, `swapPeriods`, `cancelComparison`, `periodsForRequest`, `comparisonPeriodChips`, `comparisonFromParams`, `comparisonToParams`, `baselinePeriod` |
+| Comparison — toolbar | `apps/start/src/components/event-analytics/comparison-toolbar.tsx` | `ComparisonButton`, `ComparisonPeriodBar` |
+| Comparison — bảng | `apps/start/src/components/event-analytics/comparison-columns.ts` | `comparisonColumns`, `comparisonMinWidth`, `deltaCell`, `comparisonTableCells` |
+| Comparison — chart | `apps/start/src/components/event-analytics/comparison-chart.ts` | `mergeComparisonSeries`, `periodLineStyle`, `overlayScale`, `legendRows`, `tooltipWidth`, `tooltipAnchor`, `axisLabels`, `buildSplitPanels` |
+| Ngày và delta | `apps/start/src/components/event-analytics/periods.ts` | `shiftDays`, `periodsFrom`, `axisLabel`, `longDate`, `periodRange`, `deltaPercent` |
+| Hàng chip filter | `apps/start/src/components/event-analytics/filter-row.ts` | `filterRowState`, `FILTER_ROW_EMPTY_TEXT` |
+| SQL comparison | `packages/db/src/services/overview.service.ts` | `eventAnalyticsPeriodCondition`, `eventAnalyticsPeriodHaving`, `eventAnalyticsPeriodCarrier`, `eventAnalyticsPeriodUnion`, `eventAnalyticsCoreColumn`, `toEventAnalyticsRow`, `toEventAnalyticsPeriods` |
+| Test comparison | `packages/db/src/services/` | `event-analytics-periods.test.ts` (integration), `event-analytics-property-periods.test.ts` (keys/values chạy thật), `event-analytics-periods-sql.test.ts` (SQL shape) |
 | Metrics dialog | `apps/start/src/components/event-analytics/` | `metrics-dialog.tsx`, `metrics-state.ts` |
 | Advanced filters | `apps/start/src/components/event-analytics/` | `advanced-filters-panel.tsx`, `advanced-filters-state.ts` |
 | Filter trên URL | `apps/start/src/hooks/use-event-query-filters.ts` | `useEventQueryFilters` (`f`), `useEventQueryFilterGroup` (`fg`) |
