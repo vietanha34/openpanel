@@ -1,6 +1,14 @@
-import { AdvancedFiltersPanel } from '@/components/event-analytics/advanced-filters-panel';
+import {
+  AdvancedFilterChips,
+  advancedFilterChipCount,
+  AdvancedFiltersPanel,
+} from '@/components/event-analytics/advanced-filters-panel';
+import { filterRowState } from '@/components/event-analytics/filter-row';
 import { EventAnalyticsChart } from '@/components/event-analytics/chart';
-import { coldStartSelection } from '@/components/event-analytics/chart-cold-start';
+import {
+  coldStartSelection,
+  coldStartTrigger,
+} from '@/components/event-analytics/chart-cold-start';
 import { EventTreeTable } from '@/components/event-analytics/event-tree-table';
 import { MetricsDialog } from '@/components/event-analytics/metrics-dialog';
 import type { EventAnalyticsRangeInput } from '@/components/event-analytics/tree-nodes';
@@ -13,13 +21,14 @@ import { useOverviewOptions } from '@/components/overview/useOverviewOptions';
 import {
   useEventQueryFilterGroup,
   useEventQueryFilters,
+  useEventQueryNamesFilter,
 } from '@/hooks/use-event-query-filters';
 import { useEventAnalyticsPrefs } from '@/hooks/use-event-analytics-prefs';
 import { useTRPC } from '@/integrations/trpc/react';
 import { getChartColor } from '@/utils/theme';
 import { useInfiniteQuery } from '@tanstack/react-query';
 import { createFileRoute } from '@tanstack/react-router';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 export const Route = createFileRoute(
   '/_app/$organizationId/$projectId/events/_tabs/analytics',
@@ -30,6 +39,7 @@ function EventAnalytics() {
   const { range, startDate, endDate } = useOverviewOptions();
   const [filters] = useEventQueryFilters();
   const [filterGroup, setFilterGroup] = useEventQueryFilterGroup();
+  const [eventNames] = useEventQueryNamesFilter();
 
   const input: EventAnalyticsRangeInput = useMemo(
     () => ({
@@ -68,16 +78,20 @@ function EventAnalytics() {
   );
   const selection = useMemo(() => ({ selected, toggle }), [selected, toggle]);
 
-  // R1 cold start, decided once per mount and only when nothing was stored: a
-  // stored empty selection is a choice. Pending state (not a ref) so the query
-  // below turns off once decided — a later filter change must neither refetch
-  // it nor re-select rows the user cleared.
+  // Cold start. On mount it runs only when nothing was stored (a stored empty
+  // selection is a choice). Applying a filter re-seeds: Phase 3 R2 asks to drop
+  // the previous selection and take the top rows of the filtered list, even
+  // when the user picked those rows by hand.
   const trpc = useTRPC();
+  const filterKey = useMemo(
+    () => JSON.stringify([filters, filterGroup, eventNames]),
+    [filters, filterGroup, eventNames],
+  );
+  const appliedFilterKey = useRef<string | null>(null);
   const [coldStartPending, setColdStartPending] = useState(true);
   const coldStartQuery = useInfiniteQuery(
     trpc.overview.eventAnalyticsList.infiniteQueryOptions(
-      // Mirrors EventTreeTable's first request, so both share one fetch. It
-      // only runs without stored prefs, i.e. with the default metrics and sort.
+      // Mirrors EventTreeTable's first request, so both share one fetch.
       {
         ...input,
         metrics: prefs.metrics,
@@ -89,27 +103,75 @@ function EventAnalytics() {
       {
         initialCursor: 0,
         getNextPageParam: (lastPage) => lastPage.nextCursor,
-        enabled: coldStartPending && prefsStatus === 'absent',
+        enabled: coldStartPending,
       },
     ),
   );
   const coldStartRows = coldStartQuery.data?.pages[0]?.rows;
+
+  // A filter change re-arms the query; the effect below then seeds from its
+  // rows. Kept out of the effect so the arming does not depend on row arrival.
   useEffect(() => {
-    const hasPersistedSelection = prefsStatus === 'stored';
-    const canDecide = hasPersistedSelection || coldStartRows !== undefined;
-    if (!(coldStartPending && prefsStatus !== 'loading' && canDecide)) {
+    if (appliedFilterKey.current !== null && appliedFilterKey.current !== filterKey) {
+      setColdStartPending(true);
+    }
+  }, [filterKey]);
+
+  useEffect(() => {
+    const trigger = coldStartTrigger({
+      prefsStatus,
+      selectedCount: paths.length,
+      previousFilterKey: appliedFilterKey.current,
+      filterKey,
+    });
+
+    if (trigger === 'wait' || !coldStartPending) {
       return;
     }
+
+    if (trigger === 'none') {
+      appliedFilterKey.current = filterKey;
+      setColdStartPending(false);
+      return;
+    }
+
+    // Both `seed` and `reseed` need the filtered list first.
+    if (coldStartRows === undefined) {
+      return;
+    }
+
+    appliedFilterKey.current = filterKey;
     setColdStartPending(false);
+
+    const names = coldStartRows.map((row) => row.name);
+    if (trigger === 'reseed') {
+      updatePrefs({
+        selected:
+          coldStartSelection({
+            names,
+            selectedCount: 0,
+            hasPersistedSelection: false,
+          }) ?? [],
+      });
+      return;
+    }
+
     const coldStart = coldStartSelection({
-      names: coldStartRows?.map((row) => row.name) ?? [],
+      names,
       selectedCount: paths.length,
-      hasPersistedSelection,
+      hasPersistedSelection: false,
     });
     if (coldStart) {
       updatePrefs({ selected: coldStart });
     }
-  }, [coldStartPending, coldStartRows, prefsStatus, paths.length, updatePrefs]);
+  }, [
+    coldStartPending,
+    coldStartRows,
+    prefsStatus,
+    paths.length,
+    filterKey,
+    updatePrefs,
+  ]);
 
   const setSort = useCallback(
     (sort: typeof prefs.sort) => updatePrefs({ sort }),
@@ -131,6 +193,12 @@ function EventAnalytics() {
     [prefs.chart, updatePrefs],
   );
 
+  const filterRow = filterRowState({
+    flatFilters: filters.length,
+    eventNames: eventNames.length,
+    groupConditions: advancedFilterChipCount(filterGroup),
+  });
+
   return (
     <div className="col gap-4">
       <div className="row flex-wrap gap-2">
@@ -141,7 +209,6 @@ function EventAnalytics() {
           categories={['event', 'profile', 'group', 'cohort']}
           enableEventsFilter
         />
-        <OverviewFiltersButtons className="p-0" />
         <MetricsDialog
           projectId={projectId}
           metrics={prefs.metrics}
@@ -150,6 +217,17 @@ function EventAnalytics() {
           onApply={updatePrefs}
         />
         <AdvancedFiltersPanel onChange={setFilterGroup} value={filterGroup} />
+      </div>
+      {/* R1: the applied chips live on their own row, so the toolbar row holds
+          buttons only and a long filter list cannot push them around. */}
+      <div className="row min-h-[26px] flex-wrap items-center gap-1.5">
+        <OverviewFiltersButtons className="p-0" />
+        <AdvancedFilterChips onChange={setFilterGroup} value={filterGroup} />
+        {!filterRow.hasFilters && (
+          <span className="text-[12px] text-muted-foreground">
+            {filterRow.emptyText}
+          </span>
+        )}
       </div>
       <EventAnalyticsChart
         {...input}
