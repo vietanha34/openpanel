@@ -13,6 +13,7 @@ import {
   comparisonTableCells,
   deltaCell,
 } from './comparison-columns';
+import { type TableSort, nextSort } from './tree-utils';
 
 const metrics: IEventAnalyticsMetric[] = [
   { id: 'events' },
@@ -52,6 +53,23 @@ describe('comparisonColumns', () => {
       'sum_param:day',
       'sum_param:day',
     ]);
+  });
+});
+
+describe('sorting by any period column', () => {
+  it('sends the same request whichever period was clicked', () => {
+    const [a, b, c] = comparisonColumns([{ id: 'events' }], 3);
+    const start: TableSort = { key: 'events', dir: 'desc' };
+
+    // Clicking B or C is clicking the same metric: the direction toggles just
+    // as it would on A, and the rows keep one order across every period.
+    expect(nextSort(start, b?.sortKey ?? '')).toEqual(
+      nextSort(start, a?.sortKey ?? ''),
+    );
+    expect(nextSort(start, c?.sortKey ?? '')).toEqual({
+      key: 'events',
+      dir: 'asc',
+    });
   });
 });
 
