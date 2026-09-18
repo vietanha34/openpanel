@@ -103,11 +103,13 @@ Theo design: `periodStart` (ngày đầu của A) + `periodDays`. Period k = `[s
 
 Requirements §3 ghi rõ bug đã gặp: **cộng trừ số trên chuỗi ngày** cho ra `15 - 21 = -6 Sep`. Mọi nhãn (trục x, crosshair, tooltip header, chip A–D, footer bảng) phải đọc từ đối tượng `Date`, và phép dịch ngày chỉ được làm bằng `shiftDays`. Spec đặt một helper thuần duy nhất và cấm mọi nơi khác tự tính (§6, T3.1).
 
-### D5 — Mọi period cùng độ dài, chặn ở UI
+### D5 — Bất biến I10: mọi period cùng độ dài, chặn ở UI và ở contract
 
 R3 §7 cho hai lựa chọn: chuẩn hoá theo ngày, hoặc chặn không cho chọn khác độ dài. Chọn **chặn**.
 
-Period sinh từ một mốc nên mặc định đã cùng độ dài; chỉ date picker riêng của từng chip (§4) mới phá được. Cho picker đổi **vị trí** period, không cho đổi **độ dài**: chọn ngày bắt đầu, độ dài giữ theo A. Chuẩn hoá theo ngày nghe tổng quát hơn nhưng làm mọi con số thành "trung bình mỗi ngày" — người dùng đang đọc `Events`, không đọc `Events/ngày`, và đổi ý nghĩa cột mà không nói là thứ tệ nhất có thể làm với một dashboard.
+Period sinh từ một mốc nên mặc định đã cùng độ dài; chỉ date picker riêng của từng chip (§4) mới phá được. **Date picker của chip chỉ chọn ngày bắt đầu; độ dài khoá theo `periodDays` của A** — không có ô chọn ngày kết thúc. `superRefine` của contract từ chối lần nữa ở server, nên một payload viết tay cũng không lách được.
+
+Đây là **bất biến I10**, xếp cạnh I1–I9 của `docs/event-analytics/ARCHITECTURE.md`: *mọi period trong một lần so sánh có cùng số ngày.* Chuẩn hoá theo ngày nghe tổng quát hơn nhưng làm mọi con số thành "trung bình mỗi ngày" — người dùng đang đọc `Events`, không đọc `Events/ngày`, và đổi ý nghĩa cột mà không nói là thứ tệ nhất có thể làm với một dashboard.
 
 ### D6 — Trạng thái comparison nằm trên URL, không vào localStorage
 
@@ -299,11 +301,10 @@ Lựa chọn khác: sửa engine cho nhận nhiều previous period. Bỏ vì en
 **A2 — `periods[0]` là A và cũng là `events`/`users`/`metrics` cấp cao nhất.**
 Lựa chọn khác: bỏ trường cũ, chỉ trả mảng. Bỏ vì làm vỡ mọi reader hiện tại để đổi lấy một chút gọn gàng.
 
-**A3 — Baseline 0 hiện `—`, không hiện `0.00 %`.**
-Theo requirements §7; **design làm khác** (`deltaCell(…, va ? … : 0)`). `0.00 %` nói "không đổi", còn sự thật là "không so được". Nếu chủ dự án muốn theo design thì sửa một hàm `deltaPercent`.
+**A3 — CHỐT: baseline 0 hiện `—`.**
+Theo requirements §7. **Lệch design là có chủ đích**: design tính `0.00 %` (`deltaCell(…, va ? … : 0)`), nhưng `0.00 %` nói "không đổi" trong khi sự thật là "không so được" — A không có gì để làm mẫu số. Người implement T3.1/T6 phải giữ lệch này, đừng "sửa cho khớp design".
 
-**A4 — Chặn period khác độ dài, không chuẩn hoá theo ngày.**
-Xem D5. Chuẩn hoá làm đổi ý nghĩa cột mà nhãn không đổi.
+**A4 — CHỐT: chặn period khác độ dài.** Xem D5 (đã nâng thành bất biến I10). Chuẩn hoá theo ngày làm đổi ý nghĩa cột mà nhãn không đổi.
 
 **A5 — Trạng thái compare nằm trên URL, không vào localStorage.**
 Theo R3 §9 và nhất quán với Phase 2 D6. `sortKey` vẫn ở prefs.
@@ -311,8 +312,8 @@ Theo R3 §9 và nhất quán với Phase 2 D6. `sortKey` vẫn ở prefs.
 **A6 — Period không được chồng nhau, và server từ chối nếu chồng.**
 Period sinh từ một mốc nên không chồng; chỉ picker riêng mới phá được. Chồng nhau làm một event rơi vào hai period và mọi tổng mất nghĩa.
 
-**A7 — "Period tương lai / trước ngày bắt đầu tracking → disable chip" làm ở client.**
-Server không biết ngày bắt đầu tracking của project mà không thêm một query. Client đã có ngày tạo project. Nhãn `No data for this period` theo requirements §7.
+**A7 — CHỐT: chặn ở client, nguồn ngày là `trpc.project.activationStatus`. Không cần endpoint mới.**
+Đã điều tra: procedure `project.activationStatus` (`packages/trpc/src/routers/project.ts:47`) trả sẵn `firstEventAt` (cột `Project.firstEventAt`, set một lần khi event đầu tiên về) và `projectCreatedAt`. Dùng `firstEventAt` làm mốc, fallback `projectCreatedAt` khi `firstEventAt` null — comment trong chính procedure ghi rõ cột này chỉ có với project tạo sau khi thêm cột. Period nằm hoàn toàn trước mốc đó, hoặc nằm ở tương lai → chip disabled + `No data for this period` (requirements §7). Chỉ khi task implement phát hiện procedure này không dùng được ở route analytics mới đề xuất endpoint nhỏ thành task riêng — và phải báo, không tự thêm.
 
 **A8 — Không bật đồng thời compare-period và compare-segment.**
 Theo R3 §8. Segment comparison là phase sau; item trong menu chỉ là placeholder disabled.
@@ -320,17 +321,19 @@ Theo R3 §8. Segment comparison là phase sau; item trong menu chỉ là placeho
 **A9 — `pctu` và `epau` vẫn không vẽ được trên chart khi compare.**
 Giới hạn L1 của `ACCEPTANCE.md` không đổi: mẫu số là toàn bộ user theo từng bucket. Compare không làm nó dễ hơn — giờ cần theo từng bucket **và** từng period.
 
-**A10 — Cold start seed lại khi filter đổi, kể cả khi prefs đã `stored`.**
-Theo R2. Rủi ro: người dùng đã tự chọn tập event rồi đổi filter sẽ mất lựa chọn đó. Requirements nói rõ "XOÁ lựa chọn trước và ADD lựa chọn mới", nên spec theo. Nếu thấy khó chịu khi dùng thật thì đổi thành chỉ seed lại khi lựa chọn hiện tại rỗng sau khi lọc.
+**A10 — CHỐT: apply filter xoá cả lựa chọn người dùng tự tay chọn.**
+Theo R2, nguyên văn "XOÁ lựa chọn trước và ADD lựa chọn mới". **Hệ quả phải biết trước**: người dùng tick tay 8 event, đổi một filter, thì 8 lựa chọn đó mất và chart về top 5 của danh sách mới. Đây là hành vi được yêu cầu, không phải tác dụng phụ. Hai thứ vẫn giữ nguyên: cold start lúc mount vẫn chỉ chạy khi chưa có prefs lưu, và lựa chọn rỗng do người dùng tự bỏ hết **khi filter không đổi** vẫn được tôn trọng.
 
-## 8. Questions for the user
+## 8. Decisions on the open questions
 
-1. **A3** — baseline bằng 0: hiện `—` theo requirements, hay `0.00 %` theo design? Spec đang theo requirements.
-2. **A10** — đổi filter có nên xoá cả lựa chọn người dùng **tự tay** chọn không, hay chỉ seed lại khi lựa chọn trở nên rỗng/không còn hợp lệ sau khi lọc?
-3. **D5 / A4** — chặn period khác độ dài (spec đang chọn) hay vẫn muốn chuẩn hoá theo ngày cho phép so 7 ngày với 30 ngày?
-4. Date picker riêng của từng chip period: cho đổi **vị trí** period (giữ độ dài) là đủ, hay cần đổi cả độ dài (kéo theo câu 3)?
-5. **A7** — ngày bắt đầu tracking của project lấy từ đâu ở client? Nếu chưa có sẵn thì cần một endpoint nhỏ, và đó là task riêng.
-6. Đoạn tin giao việc bị mất chữ (§0 mục 2) còn ý nào khác ngoài câu hỏi backend mà spec đã trả lời ở D1/D2 không?
+Sáu câu hỏi của bản trước đã được chủ dự án chốt khi duyệt spec. Ghi lại để lúc implement không mở lại.
+
+1. **Baseline A = 0 hiện `—`** (A3). Lệch design là có chủ đích.
+2. **Apply filter xoá cả lựa chọn người dùng tự tay chọn** (A10), kèm hệ quả đã ghi.
+3. **Chặn period khác độ dài** (D5 / A4), nâng thành bất biến I10.
+4. **Date picker từng chip chỉ chọn ngày bắt đầu**, độ dài khoá theo A (D5).
+5. **Ngày bắt đầu tracking lấy từ `trpc.project.activationStatus`** — `firstEventAt`, fallback `projectCreatedAt`. Không cần endpoint mới; nếu task implement thấy không dùng được thì dừng và báo (A7).
+6. **Thiết kế hai vế được duyệt**: bảng nới contract vì căn dòng, chart gọi n query và giữ nguyên engine (D1). Tin giao việc gốc không còn ý nào khác.
 
 ## 9. Appendix A — requirements nguyên văn
 
