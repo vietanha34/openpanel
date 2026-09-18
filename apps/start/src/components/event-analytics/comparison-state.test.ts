@@ -176,6 +176,22 @@ describe('URL round trip', () => {
     });
   });
 
+  it('reads a missing focus as "nothing isolated"', () => {
+    // `comparisonToParams` drops cmpf at focusPeriod -1, so the way back must
+    // not turn the absent param into focus 0.
+    expect(
+      comparisonFromParams({
+        cmp: '1',
+        cmpn: '2',
+        cmpv: 'overlay',
+        cmpf: null,
+      }).focusPeriod,
+    ).toBe(-1);
+    expect(
+      comparisonFromParams({ cmp: '1', cmpn: null, cmpv: 'overlay', cmpf: '' }),
+    ).toMatchObject({ compareCount: 2, focusPeriod: -1 });
+  });
+
   it('survives a hand-edited URL', () => {
     expect(
       comparisonFromParams({ cmp: '1', cmpn: '99', cmpv: 'nope', cmpf: 'x' }),

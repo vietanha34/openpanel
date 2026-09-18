@@ -63,8 +63,14 @@ export function periodsFrom(
   return periods;
 }
 
-/** Chart axis tick: `05.09`. */
-export function axisLabel(date: Date): string {
+/**
+ * Chart axis tick: `05.09`, or `14:00` on the hourly grain, where every bucket
+ * of a day would otherwise read as the same date.
+ */
+export function axisLabel(date: Date, grain?: 'hour' | 'day' | 'week'): string {
+  if (grain === 'hour') {
+    return `${pad2(date.getHours())}:00`;
+  }
   return `${pad2(date.getDate())}.${pad2(date.getMonth() + 1)}`;
 }
 

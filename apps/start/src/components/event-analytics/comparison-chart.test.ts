@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  AXIS_LABEL_MAX,
   DIMMED_OPACITY,
   ISOLATED_WIDTH,
   OVERLAY_HEIGHT,
@@ -18,6 +19,8 @@ import {
   tooltipColumns,
   tooltipRows,
   tooltipWidth,
+  axisLabels,
+  tooltipAnchor,
 } from './comparison-chart';
 import type { ComparisonChartSerie } from './comparison-chart';
 
@@ -511,5 +514,45 @@ describe('buildSplitPanels', () => {
 
   it('is empty without series', () => {
     expect(panelsOf(2, [])).toEqual([]);
+  });
+});
+
+describe('axisLabels', () => {
+  const labels = (count: number) =>
+    Array.from({ length: count }, (_, index) => `b${index}`);
+
+  it('prints every label while the axis has room', () => {
+    expect(axisLabels(labels(AXIS_LABEL_MAX))).toHaveLength(AXIS_LABEL_MAX);
+  });
+
+  it('prints every fourth label once the axis is crowded', () => {
+    expect(axisLabels(labels(13))).toEqual(['b0', 'b4', 'b8', 'b12']);
+    expect(axisLabels(labels(24))).toHaveLength(6);
+  });
+
+  it('never draws more labels than fit, however long the range', () => {
+    // An hourly week is 168 buckets; every fourth label is still a smudge.
+    expect(axisLabels(labels(168)).length).toBeLessThanOrEqual(AXIS_LABEL_MAX);
+  });
+});
+
+describe('tooltipAnchor', () => {
+  it('centres the tooltip loosely in the middle of the plot', () => {
+    expect(tooltipAnchor(5, 11)).toEqual({
+      left: '50%',
+      transform: 'translateX(-40%)',
+    });
+  });
+
+  it('anchors at the ends so the tooltip stays inside the card', () => {
+    expect(tooltipAnchor(0, 11).transform).toBe('translateX(0)');
+    expect(tooltipAnchor(10, 11).transform).toBe('translateX(-100%)');
+  });
+
+  it('treats a single bucket as the left edge', () => {
+    expect(tooltipAnchor(0, 1)).toEqual({
+      left: '0%',
+      transform: 'translateX(0)',
+    });
   });
 });

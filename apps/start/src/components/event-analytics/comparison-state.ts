@@ -174,8 +174,13 @@ export function comparisonFromParams(params: {
     return base;
   }
 
-  const count = Number(params.cmpn);
-  const focus = Number(params.cmpf);
+  // `Number(null)` and `Number('')` are both 0, which would read a missing
+  // `cmpf` as "period A is isolated" — the state `comparisonToParams` writes
+  // as no param at all. Absent has to stay absent for the round trip to hold.
+  const num = (value: string | null) =>
+    value === null || value === '' ? Number.NaN : Number(value);
+  const count = num(params.cmpn);
+  const focus = num(params.cmpf);
 
   return clampFocus({
     compare: true,
