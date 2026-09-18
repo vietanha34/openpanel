@@ -93,8 +93,7 @@ export function AdvancedFiltersPanel({ value, onChange }: Props) {
   const chips = value ? chipsFor(value) : [];
 
   return (
-    <div className="col gap-2">
-      <Popover onOpenChange={setOpen} open={open}>
+    <Popover onOpenChange={setOpen} open={open}>
         <PopoverTrigger asChild>
           <Button icon={FilterIcon} variant={open ? 'default' : 'outline'}>
             Filters
@@ -267,36 +266,54 @@ export function AdvancedFiltersPanel({ value, onChange }: Props) {
             </Button>
           </div>
         </PopoverContent>
-      </Popover>
-
-      {chips.length > 0 && (
-        <div className="row flex-wrap items-center gap-1.5">
-          {chips.map((chip) => (
-            <button
-              className="row h-[26px] items-center gap-1.5 rounded-full border bg-def-100 px-2.5 font-mono text-[11px] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-highlight"
-              key={chip.id}
-              onClick={() => {
-                if (!value) return;
-                const next = removeCondition(value, chip.id);
-                onChange(next.children.length > 0 ? next : null);
-              }}
-              type="button"
-            >
-              {chip.text}
-              <span aria-hidden className="text-muted-foreground">
-                ×
-              </span>
-            </button>
-          ))}
-          <button
-            className="text-[12px] text-highlight"
-            onClick={() => onChange(null)}
-            type="button"
-          >
-            Clear all
-          </button>
-        </div>
-      )}
-    </div>
+    </Popover>
   );
+}
+
+/**
+ * The applied group's chips. Rendered on the filter row (R1), not next to the
+ * trigger: the toolbar row holds buttons only. Clicking a chip removes that
+ * condition from the applied group, which re-queries immediately — the chips
+ * act on what is applied, unlike the panel's staged draft.
+ */
+export function AdvancedFilterChips({ value, onChange }: Props) {
+  const chips = value ? chipsFor(value) : [];
+
+  if (chips.length === 0) {
+    return null;
+  }
+
+  return (
+    <>
+      {chips.map((chip) => (
+        <button
+          className="row h-[26px] items-center gap-1.5 rounded-full border bg-def-100 px-2.5 font-mono text-[11px] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-highlight"
+          key={chip.id}
+          onClick={() => {
+            if (!value) return;
+            const next = removeCondition(value, chip.id);
+            onChange(next.children.length > 0 ? next : null);
+          }}
+          type="button"
+        >
+          {chip.text}
+          <span aria-hidden className="text-muted-foreground">
+            ×
+          </span>
+        </button>
+      ))}
+      <button
+        className="text-[12px] text-highlight"
+        onClick={() => onChange(null)}
+        type="button"
+      >
+        Clear all
+      </button>
+    </>
+  );
+}
+
+/** How many conditions the applied group holds, for the filter row's empty state. */
+export function advancedFilterChipCount(value: IFilterGroup | null): number {
+  return value ? chipsFor(value).length : 0;
 }
