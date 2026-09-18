@@ -377,6 +377,21 @@ function eventAnalyticsPeriodCondition(period: IEventAnalyticsPeriod): string {
 }
 
 /**
+ * The columns a CTE must carry so the per-period aggregates above it resolve.
+ *
+ * `countIf(created_at BETWEEN ...)` runs on the outermost SELECT, several CTEs
+ * away from the events table; a CTE only exposes the columns it selects, so
+ * without this the server rejects the query with `Unknown expression or
+ * function identifier 'created_at'`.
+ */
+function eventAnalyticsPeriodCarrier(
+  periods: IEventAnalyticsPeriod[] | undefined,
+  columns: string[]
+): string[] {
+  return comparisonPeriods(periods) ? [...columns, 'created_at'] : columns;
+}
+
+/**
  * Restricts the rows to those period A actually saw.
  *
  * Without it the `GROUP BY` runs over the union of every period, so an event
@@ -687,7 +702,10 @@ export function buildEventPropertyKeysQuery({
 
   // Same filtered slice as the list and the totals, narrowed to one event.
   const baseEvents = buildEventAnalyticsBaseQuery(range)
-    .select(['profile_id', 'properties'])
+    // `created_at` travels only in comparison mode: the per-period aggregates
+    // read it two CTEs down, and a CTE only exposes what it selects. Without a
+    // comparison the column stays out, which keeps the SQL byte-identical.
+    .select(eventAnalyticsPeriodCarrier(range.periods, ['profile_id', 'properties']))
     .where('name', '=', event);
 
   for (const { key, value } of parentPath) {
@@ -697,22 +715,26 @@ export function buildEventPropertyKeysQuery({
   }
 
   const matchedKeys = clix(ch, timezone)
-    .select([
-      'profile_id',
-      'properties',
-      `arrayFilter(k -> startsWith(k, ${escapedPrefix}), mapKeys(properties)) AS matched`,
-    ])
+    .select(
+      eventAnalyticsPeriodCarrier(range.periods, [
+        'profile_id',
+        'properties',
+        `arrayFilter(k -> startsWith(k, ${escapedPrefix}), mapKeys(properties)) AS matched`,
+      ])
+    )
     .from('base_events');
 
   // One row per (event, distinct segment): an event carrying several keys under
   // the same object still counts once for that object.
   const segments = clix(ch, timezone)
-    .select([
+    .select(
+      eventAnalyticsPeriodCarrier(range.periods, [
       'profile_id',
       'properties',
       'matched',
       `arrayJoin(arrayDistinct(arrayMap(k -> splitByChar('.', substring(k, length(${escapedPrefix}) + 1))[1], matched))) AS segment`,
-    ])
+      ])
+    )
     .from('matched_keys')
     .rawWhere('notEmpty(matched)');
 
@@ -734,7 +756,9 @@ export function buildEventPropertyKeysQuery({
     .from('segments')
     .groupBy(['segment'])
     .rawHaving(eventAnalyticsPeriodHaving(range.periods) ?? '')
-    .orderBy('events', 'DESC')
+    // In comparison mode the column is `events_p0`; ordering by the old name
+    // would reference a column that no longer exists.
+    .orderBy(eventAnalyticsCoreColumn('events', range.periods), 'DESC')
     .orderBy('key', 'ASC')
     .limit(limit + 1)
     .offset(cursor);
@@ -824,7 +848,7 @@ export function buildEventPropertyValuesQuery({
 }: IGetEventPropertyValuesInput) {
   const valueExpression = `properties[${sqlstring.escape(key)}]`;
   const baseValues = buildEventAnalyticsBaseQuery(range)
-    .select(['properties', 'profile_id'])
+    .select(eventAnalyticsPeriodCarrier(range.periods, ['properties', 'profile_id']))
     .where('name', '=', event)
     .rawWhere(`mapContains(properties, ${sqlstring.escape(key)})`);
 
