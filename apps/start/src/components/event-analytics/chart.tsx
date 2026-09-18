@@ -43,9 +43,11 @@ import {
   resolveChartMetric,
 } from './chart-input';
 import {
+  axisLabels,
   buildOverlay,
   buildSplitPanels,
   legendRows,
+  tooltipAnchor,
   mergeComparisonSeries,
   tooltipColumns,
   tooltipRows,
@@ -320,6 +322,7 @@ export function EventAnalyticsChart({
       {comparing && comparison && baseline ? (
         <ComparisonChart
           baseline={baseline}
+          granularity={granularity}
           inputs={comparisonInputs}
           onComparisonChange={onComparisonChange}
           state={comparison}
@@ -350,6 +353,8 @@ type ComparisonChartProps = {
   inputs: ReturnType<typeof buildComparisonChartInputs>;
   state: ComparisonState;
   baseline: BaselinePeriod;
+  /** Picks the axis tick format: hourly buckets need the hour, not the date. */
+  granularity: EventAnalyticsChartGranularity;
   onComparisonChange?: (next: ComparisonState) => void;
 };
 
@@ -366,6 +371,7 @@ function ComparisonChart({
   inputs,
   state,
   baseline,
+  granularity,
   onComparisonChange,
 }: ComparisonChartProps) {
   const trpc = useTRPC();
@@ -414,7 +420,7 @@ function ComparisonChart({
     };
   };
 
-  const bucketLabels = dates.map((date) => axisLabel(new Date(date)));
+  const bucketLabels = dates.map((date) => axisLabel(new Date(date), granularity));
 
   if (state.compareView === 'split') {
     const panels = buildSplitPanels({
@@ -660,7 +666,7 @@ function ComparisonChart({
               </svg>
             </button>
             <div className="row justify-between pt-2">
-              {bucketLabels.map((label) => (
+              {axisLabels(bucketLabels).map((label) => (
                 <span
                   className="font-mono text-[10px] text-muted-foreground"
                   key={label}
@@ -697,8 +703,7 @@ function ComparisonChart({
               <div
                 className="pointer-events-none absolute top-[-6px] z-30 rounded-lg bg-foreground px-3.5 py-3 text-background shadow-lg"
                 style={{
-                  left: `${(bucket / Math.max(1, overlay.buckets - 1)) * 100}%`,
-                  transform: 'translateX(-40%)',
+                  ...tooltipAnchor(bucket, overlay.buckets),
                   width: tooltipWidth(inputs.length),
                 }}
               >

@@ -66,6 +66,8 @@ describe('periodsFrom', () => {
 describe('labels', () => {
   it('formats the axis as dd.mm', () => {
     expect(axisLabel(new Date(2026, 8, 5))).toBe('05.09');
+    expect(axisLabel(new Date(2026, 8, 5, 14), 'hour')).toBe('14:00');
+    expect(axisLabel(new Date(2026, 8, 5, 14), 'day')).toBe('05.09');
   });
 
   it('formats a long date', () => {

@@ -123,6 +123,43 @@ export type Overlay = OverlayScale & {
   crosshairX: (bucket: number) => string;
 };
 
+/**
+ * Up to this many buckets every label fits, as in the design; past it the axis
+ * prints every fourth label, and for the long ranges (an hourly week is 168
+ * buckets) it thins further so at most AXIS_LABEL_MAX labels are drawn.
+ */
+export const AXIS_LABEL_MAX = 12;
+const AXIS_LABEL_STEP = 4;
+
+/** The labels the axis actually prints, thinned once the axis gets crowded. */
+export function axisLabels(labels: string[]): string[] {
+  if (labels.length <= AXIS_LABEL_MAX) {
+    return labels;
+  }
+  const step = Math.max(
+    AXIS_LABEL_STEP,
+    Math.ceil(labels.length / AXIS_LABEL_MAX),
+  );
+  return labels.filter((_, index) => index % step === 0);
+}
+
+/**
+ * Where the crosshair tooltip sits, as a percentage of the plot width plus the
+ * transform that keeps it inside the card. The design centres it loosely
+ * (-40%); near either edge that would hang the tooltip outside the chart, so
+ * the ends anchor instead.
+ */
+export function tooltipAnchor(bucket: number, buckets: number) {
+  const ratio = buckets <= 1 ? 0 : bucket / (buckets - 1);
+  if (ratio < 0.2) {
+    return { left: `${ratio * 100}%`, transform: 'translateX(0)' };
+  }
+  if (ratio > 0.8) {
+    return { left: `${ratio * 100}%`, transform: 'translateX(-100%)' };
+  }
+  return { left: `${ratio * 100}%`, transform: 'translateX(-40%)' };
+}
+
 export function buildOverlay(input: {
   series: ComparisonChartSerie[];
   periodCount: number;
