@@ -416,15 +416,11 @@ const FIXTURE_PROFILES: { user: string; plan: string }[] = [
   { user: users.u5, plan: 'free' },
 ];
 
-function buildEvents(projectId: string) {
-  return FIXTURE_EVENTS.map((event, index) => ({
-    id: `00000000-0000-4000-9000-${String(index + 1).padStart(12, '0')}`,
+/** The columns every fixture row shares, so the two fixtures cannot drift. */
+function buildEvent(projectId: string, seq: number) {
+  return {
+    id: `00000000-0000-4000-9000-${String(seq).padStart(12, '0')}`,
     project_id: projectId,
-    profile_id: event.user,
-    device_id: `dev-${event.user}`,
-    name: event.name,
-    session_id: `sess-${event.user}`,
-    created_at: `${event.day ?? '2024-03-04'} 12:00:00`,
     path: '/',
     origin: 'https://example.com',
     referrer: '',
@@ -432,7 +428,6 @@ function buildEvents(projectId: string) {
     referrer_type: '',
     revenue: 0,
     duration: 0,
-    properties: event.properties,
     groups: [],
     country: 'US',
     city: '',
@@ -446,6 +441,18 @@ function buildEvents(projectId: string) {
     device: 'desktop',
     brand: '',
     model: '',
+  };
+}
+
+function buildEvents(projectId: string) {
+  return FIXTURE_EVENTS.map((event, index) => ({
+    ...buildEvent(projectId, index + 1),
+    profile_id: event.user,
+    device_id: `dev-${event.user}`,
+    name: event.name,
+    session_id: `sess-${event.user}`,
+    created_at: `${event.day ?? '2024-03-04'} 12:00:00`,
+    properties: event.properties,
   }));
 }
 
@@ -463,6 +470,38 @@ function buildProfiles(projectId: string) {
     created_at: '2024-03-04 00:00:00.000',
     last_seen_at: '2024-03-04 12:00:00.000',
   }));
+}
+
+/**
+ * A separate, tiny fixture for the timezone-boundary case (T9 / BUG 2). It uses
+ * its OWN project id on purpose: the 20:00 event sits inside period A's window
+ * once the range helper applies the timezone offset, so adding it to the shared
+ * fixture would move the T8/P8 numbers.
+ *
+ * The three rows are one event name at:
+ *   2024-03-03 20:00:00  -- late enough that a timezone shift moves it between
+ *                           period A and period B
+ *   2024-03-04 12:00:00  -- squarely inside period A either way
+ *   2024-03-01 12:00:00  -- outside both periods, so it must never be counted
+ */
+export async function setupEventAnalyticsBoundaryFixture(
+  projectId: string
+): Promise<void> {
+  await teardownEventAnalyticsFixtures(projectId);
+  const at = ['2024-03-03 20:00:00', '2024-03-04 12:00:00', '2024-03-01 12:00:00'];
+  await ch.insert({
+    table: TABLE_NAMES.events,
+    values: at.map((createdAt, index) => ({
+      ...buildEvent(projectId, index + 1),
+      profile_id: 'ea-tz-u1',
+      device_id: 'dev-ea-tz-u1',
+      session_id: 'sess-ea-tz-u1',
+      name: 'tz_boundary',
+      created_at: createdAt,
+      properties: {},
+    })),
+    format: 'JSONEachRow',
+  });
 }
 
 export async function setupEventAnalyticsFixtures(

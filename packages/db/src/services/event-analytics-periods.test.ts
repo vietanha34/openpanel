@@ -17,6 +17,7 @@ import { ch } from '../clickhouse/client';
 import {
   EVENT_ANALYTICS_BLUEPRINT,
   EVENT_ANALYTICS_FIXTURE,
+  setupEventAnalyticsBoundaryFixture,
   setupEventAnalyticsFixtures,
   teardownEventAnalyticsFixtures,
 } from './event-analytics-fixtures';
@@ -278,5 +279,68 @@ describe('the row set follows period A', () => {
     );
     expect(first.rows.map((row) => row.periods?.[0]?.events)).toEqual([8, 3]);
     expect(first.nextCursor).toBe(2);
+  });
+});
+
+describe('period A is the same range with or without comparison', () => {
+  /** Its own project: the 20:00 row would move the shared fixture's numbers. */
+  const boundaryProjectId = 'test-event-analytics-t9-boundary';
+
+  beforeAll(async () => {
+    if (!chReachable) {
+      return;
+    }
+    await setupEventAnalyticsBoundaryFixture(boundaryProjectId);
+  }, 60_000);
+
+  afterAll(async () => {
+    if (chReachable) {
+      await teardownEventAnalyticsFixtures(boundaryProjectId);
+    }
+  }, 60_000);
+
+  it('reports the same events and users for period A either way', async (ctx) => {
+    if (!chReachable) ctx.skip('ClickHouse not reachable at CLICKHOUSE_URL');
+
+    const boundaryRange = {
+      projectId: boundaryProjectId,
+      filters: [],
+      ...EVENT_ANALYTICS_FIXTURE.range,
+    };
+    const listArgs = { sort: 'events' as const, dir: 'desc' as const, limit: 10 };
+
+    const single = await overviewService.getEventAnalyticsList({
+      ...boundaryRange,
+      ...listArgs,
+    });
+    const comparison = await overviewService.getEventAnalyticsList({
+      // Period A carries exactly the startDate/endDate of the single-period
+      // request above, so turning comparison on must not move its numbers.
+      ...boundaryRange,
+      periods: [...EVENT_ANALYTICS_FIXTURE.periods],
+      ...listArgs,
+    });
+
+    const singleRow = single.rows.find((row) => row.name === 'tz_boundary');
+    const baseline = comparison.rows.find((row) => row.name === 'tz_boundary')
+      ?.periods?.[0];
+
+    // §4: `periods[0]` IS period A. The two requests ask for the same days, so
+    // any difference means the period conditions and the scanned range are not
+    // reading the same clock.
+    //
+    // The fixture's 20:00 row is what exposes it: the outer range goes through
+    // the datetime helper and lands on a timezone-shifted window, while the
+    // per-period `*If` conditions are raw. On a machine already running UTC the
+    // two agree and this assertion passes without having anything to catch —
+    // it pins the invariant, not one machine's offset.
+    expect(baseline?.events).toBe(singleRow?.events);
+    expect(baseline?.users).toBe(singleRow?.users);
+
+    // The 2024-03-01 row sits outside every period and must never be counted.
+    const periodEvents = (
+      comparison.rows.find((row) => row.name === 'tz_boundary')?.periods ?? []
+    ).reduce((sum, period) => sum + period.events, 0);
+    expect(periodEvents).toBe(2);
   });
 });
