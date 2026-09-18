@@ -6,6 +6,7 @@ import type {
 } from '@openpanel/validation';
 
 import {
+  buildComparisonChartInputs,
   buildEventAnalyticsChartInput,
   chartSegmentFor,
   resolveChartMetric,
@@ -227,5 +228,69 @@ describe('resolveChartMetric', () => {
     expect(resolveChartMetric([{ id: 'pctu' }], 'pctu')).toEqual({
       id: 'events',
     });
+  });
+});
+
+describe('buildComparisonChartInputs', () => {
+  const selected = [{ path: '/level_start', color: '#2563EB' }];
+  const periods = [
+    { startDate: '2026-09-12 00:00:00', endDate: '2026-09-18 23:59:59' },
+    { startDate: '2026-09-05 00:00:00', endDate: '2026-09-11 23:59:59' },
+  ];
+
+  it('builds one input per period, dates apart', () => {
+    const inputs = buildComparisonChartInputs({ ...base, selected, periods });
+
+    expect(inputs).toHaveLength(2);
+    expect(inputs.map((input) => [input.startDate, input.endDate])).toEqual(
+      periods.map((period) => [period.startDate, period.endDate]),
+    );
+  });
+
+  // The whole point of reusing the builder: a comparison series and a plain
+  // series can never be computed from different query inputs.
+  it('period A is the non-compare input with A dates', () => {
+    const plain = buildEventAnalyticsChartInput({ ...base, selected });
+    const [periodA] = buildComparisonChartInputs({
+      ...base,
+      selected,
+      periods,
+    });
+
+    expect(periodA).toEqual({
+      ...plain,
+      startDate: periods[0]!.startDate,
+      endDate: periods[0]!.endDate,
+    });
+  });
+
+  it('carries the metric segment and the filter group into every period', () => {
+    const filterGroup = {
+      kind: 'group' as const,
+      op: 'and' as const,
+      children: [
+        {
+          kind: 'condition' as const,
+          filter: {
+            name: 'properties.level_mode',
+            operator: 'is' as const,
+            value: ['hard'],
+          },
+        },
+      ],
+    };
+    const inputs = buildComparisonChartInputs({
+      ...base,
+      filterGroup,
+      metric: { id: 'avg_param', param: 'level_id' },
+      selected,
+      periods,
+    });
+
+    for (const input of inputs) {
+      // The group rides on each series, where the server reads it (B7).
+      expect(input.series[0]?.filterGroup).toEqual(filterGroup);
+      expect(input.series[0]?.segment).toBe('property_average_missing_zero');
+    }
   });
 });
