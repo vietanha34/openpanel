@@ -462,6 +462,7 @@ Số đo lấy từ design, khai trong `comparison-chart.ts`:
 | I11 | **Tập dòng của comparison theo period A**, và `ORDER BY` luôn là cột của A | `eventAnalyticsPeriodHaving`, `eventAnalyticsSortColumn` | `event-analytics-periods.test.ts`, `event-analytics-property-periods.test.ts` |
 | I12 | **Một query, một hệ thời gian.** Mốc của period và mốc của khoảng bao đi qua cùng `clix.datetime` | `eventAnalyticsPeriodCondition` | `event-analytics-periods-sql.test.ts` |
 | I13 | **Endpoint nào nhận `periods` cũng phải có test CHẠY THẬT trên ClickHouse.** Test khẳng định chuỗi SQL không thấy được `Unknown identifier` | — | `event-analytics-periods.test.ts`, `event-analytics-property-periods.test.ts` |
+| I14 | **Mọi phép dịch ngày đi qua `Date.setDate()`; cấm cộng trừ số trên chuỗi ngày.** Nhãn cũng format từ một `Date`, không cắt từ nhãn khác. Đây là quy tắc user nhấn mạnh sau bug `15 - 21` ra `-6 Sep`; chính test helper của Phase 3 P1 cũng từng dính, sinh ra `2026-09--9` | `periods.ts` (`shiftDays`, `periodsFrom`, `axisLabel`, `longDate`, `periodRange`) | `periods.test.ts` (bắc cầu tháng và bắc cầu năm), `comparison-state.test.ts` |
 | I9 | **Không có group → SQL byte-identical** với đường phẳng, cho mọi caller không phải Event Analytics | `getEventAnalyticsWhereClause`, `getChartSql` | `event-analytics-group-sql.test.ts`, `chart-filter-group-sql.test.ts`, `chart-segment-sql.test.ts` (snapshot) |
 
 ## 5. Bản đồ file
