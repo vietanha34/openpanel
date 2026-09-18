@@ -4,6 +4,7 @@ import {
   parseAsArrayOf,
   parseAsString,
   useQueryState,
+  useQueryStates,
 } from 'nuqs';
 import { useCallback } from 'react';
 
@@ -186,4 +187,29 @@ export function useEventQueryFilterGroup(options: NuqsOptions = {}) {
     'fg',
     filterGroupParser.withOptions({ ...nuqsOptions, ...options }),
   );
+}
+
+/**
+ * Comparison mode lives in the URL, not in the stored preferences: a link to a
+ * comparison must open the same comparison for whoever receives it (Phase 3
+ * §3 D6). `cmpp` is the baseline's first day; the length comes from the report's
+ * own range, so every period is the same length by construction.
+ */
+export const comparisonParsers = {
+  cmp: parseAsString,
+  cmpn: parseAsString,
+  cmpv: parseAsString,
+  cmpf: parseAsString,
+  cmpp: parseAsString,
+};
+
+export function useEventAnalyticsComparisonParams(
+  options: NuqsOptions = {},
+) {
+  const [raw, setRaw] = useQueryStates(comparisonParsers, {
+    ...nuqsOptions,
+    ...options,
+  });
+
+  return [raw, setRaw] as const;
 }

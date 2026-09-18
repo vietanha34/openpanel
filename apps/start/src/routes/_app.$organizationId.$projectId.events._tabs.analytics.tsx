@@ -3,6 +3,18 @@ import {
   advancedFilterChipCount,
   AdvancedFiltersPanel,
 } from '@/components/event-analytics/advanced-filters-panel';
+import {
+  baselinePeriod,
+  comparisonFromParams,
+  comparisonToParams,
+  cancelComparison,
+  type ComparisonState,
+  periodsForRequest,
+} from '@/components/event-analytics/comparison-state';
+import {
+  ComparisonButton,
+  ComparisonPeriodBar,
+} from '@/components/event-analytics/comparison-toolbar';
 import { filterRowState } from '@/components/event-analytics/filter-row';
 import { EventAnalyticsChart } from '@/components/event-analytics/chart';
 import {
@@ -19,6 +31,7 @@ import {
 import { OverviewRange } from '@/components/overview/overview-range';
 import { useOverviewOptions } from '@/components/overview/useOverviewOptions';
 import {
+  useEventAnalyticsComparisonParams,
   useEventQueryFilterGroup,
   useEventQueryFilters,
   useEventQueryNamesFilter,
@@ -41,6 +54,29 @@ function EventAnalytics() {
   const [filterGroup, setFilterGroup] = useEventQueryFilterGroup();
   const [eventNames] = useEventQueryNamesFilter();
 
+  // Comparison lives in the URL so a compared view can be shared (§3 D6).
+  const [comparisonParams, setComparisonParams] =
+    useEventAnalyticsComparisonParams();
+  const comparison = useMemo(
+    () => comparisonFromParams(comparisonParams),
+    [comparisonParams],
+  );
+  const baseline = useMemo(
+    () => baselinePeriod({ range, startDate, endDate }),
+    [range, startDate, endDate],
+  );
+  const setComparison = useCallback(
+    (next: ComparisonState) => setComparisonParams(comparisonToParams(next)),
+    [setComparisonParams],
+  );
+  const periods = useMemo(
+    () =>
+      baseline
+        ? periodsForRequest(comparison, baseline.anchorStart, baseline.periodDays)
+        : undefined,
+    [comparison, baseline],
+  );
+
   const input: EventAnalyticsRangeInput = useMemo(
     () => ({
       projectId,
@@ -49,8 +85,9 @@ function EventAnalytics() {
       endDate,
       filters,
       ...(filterGroup ? { filterGroup } : {}),
+      ...(periods ? { periods } : {}),
     }),
-    [projectId, range, startDate, endDate, filters, filterGroup],
+    [projectId, range, startDate, endDate, filters, filterGroup, periods],
   );
 
   // Lifted here because the chart panel (T5) plots exactly these paths. The
@@ -217,7 +254,31 @@ function EventAnalytics() {
           onApply={updatePrefs}
         />
         <AdvancedFiltersPanel onChange={setFilterGroup} value={filterGroup} />
+        {/* Ranges without a fixed day count cannot be stepped back (I10), so
+            the control is absent rather than offering a broken comparison. */}
+        {baseline && (
+          <ComparisonButton onChange={setComparison} state={comparison} />
+        )}
       </div>
+      {baseline && comparison.compare && (
+        <ComparisonPeriodBar
+          anchorStart={baseline.anchorStart}
+          onCancel={() => {
+            const next = cancelComparison(comparison, {
+              sortKey: prefs.sort.key,
+              chartMetric: prefs.chart.metric,
+            });
+            setComparison(next.state);
+            updatePrefs({
+              sort: { ...prefs.sort, key: next.sortKey },
+              chart: { ...prefs.chart, metric: next.chartMetric },
+            });
+          }}
+          onChange={setComparison}
+          periodDays={baseline.periodDays}
+          state={comparison}
+        />
+      )}
       {/* R1: the applied chips live on their own row, so the toolbar row holds
           buttons only and a long filter list cannot push them around. */}
       <div className="row min-h-[26px] flex-wrap items-center gap-1.5">
