@@ -6,6 +6,7 @@ import {
 import {
   baselinePeriod,
   comparisonFromParams,
+  comparisonPeriodChips,
   comparisonToParams,
   cancelComparison,
   type ComparisonState,
@@ -75,6 +76,23 @@ function EventAnalytics() {
         ? periodsForRequest(comparison, baseline.anchorStart, baseline.periodDays)
         : undefined,
     [comparison, baseline],
+  );
+
+  // The table splits its columns per period and prints the ranges in its
+  // footer; `null` keeps it single-period.
+  const tableComparison = useMemo(
+    () =>
+      baseline && comparison.compare
+        ? {
+            compareCount: comparison.compareCount,
+            ranges: comparisonPeriodChips(
+              comparison,
+              baseline.anchorStart,
+              baseline.periodDays,
+            ).map((chip) => chip.range),
+          }
+        : null,
+    [baseline, comparison],
   );
 
   const input: EventAnalyticsRangeInput = useMemo(
@@ -309,6 +327,7 @@ function EventAnalytics() {
         onSortChange={setSort}
         showPct={prefs.pct}
         onShowPctChange={setShowPct}
+        comparison={tableComparison}
         selection={selection}
       />
     </div>

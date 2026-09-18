@@ -10,12 +10,22 @@ import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
 import { Info, RotateCw, Search, SearchX } from 'lucide-react';
 import { useState } from 'react';
 import {
+  COMPARISON_COLUMN_PX,
+  type DeltaCell,
+  comparisonColumns,
+  comparisonFooterLabel,
+  comparisonMinWidth,
+  comparisonTableCells,
+} from './comparison-columns';
+import {
   CELL,
+  DELTA_TONE_CLASS,
   type EventAnalyticsRangeInput,
   EventNode,
   type TreeContextValue,
   type TreeSelection,
   cellStyle,
+  labelTrackStyle,
 } from './tree-nodes';
 import {
   type TableSort,
@@ -53,6 +63,30 @@ function TotalsCell({
   );
 }
 
+/** Comparison totals: the number and its delta on one line (design 3b). */
+function ComparisonTotalsCell({
+  value,
+  delta,
+  width,
+}: {
+  value: string;
+  delta: DeltaCell | null;
+  width: number;
+}) {
+  return (
+    <div className={CELL} style={cellStyle(width)}>
+      <div className="whitespace-nowrap font-mono text-[13px] font-semibold">
+        {value}
+        {delta ? (
+          <span className={cn('ml-1.5 font-normal', DELTA_TONE_CLASS[delta.tone])}>
+            {delta.text}
+          </span>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
 export function EventTreeTable({
   input: rangeInput,
   metrics,
@@ -60,6 +94,7 @@ export function EventTreeTable({
   onSortChange,
   showPct,
   onShowPctChange,
+  comparison,
   selection,
 }: {
   input: EventAnalyticsRangeInput;
@@ -70,6 +105,11 @@ export function EventTreeTable({
   /** The `%` toggle: relative shares under the absolute values. */
   showPct: boolean;
   onShowPctChange: (showPct: boolean) => void;
+  /**
+   * Comparison mode: how many periods the columns split into, and the range of
+   * each one for the footer. `null` when comparison is off.
+   */
+  comparison: { compareCount: number; ranges: string[] } | null;
   selection: TreeSelection;
 }) {
   const trpc = useTRPC();
@@ -79,7 +119,24 @@ export function EventTreeTable({
   // Every level asks for the same metrics, so the server fills `row.metrics`.
   const input = { ...rangeInput, metrics };
   const sort = resolveSort(storedSort, metrics);
-  const columnWidth = metricColumnWidth(metrics.length);
+  const compareCount = comparison?.compareCount ?? null;
+  const columnWidth =
+    compareCount === null ? metricColumnWidth(metrics.length) : COMPARISON_COLUMN_PX;
+  const minWidth =
+    compareCount === null
+      ? tableMinWidth(metrics.length)
+      : comparisonMinWidth(metrics.length, compareCount);
+  // One block of columns per metric, each split per period when comparing.
+  const columns =
+    compareCount === null
+      ? metrics.map((metric) => ({
+          key: metricKey(metric),
+          label: metricColumnLabel(metric),
+          sub: '',
+          period: 0,
+          sortKey: metricKey(metric),
+        }))
+      : comparisonColumns(metrics, compareCount);
 
   const listQuery = useInfiniteQuery(
     trpc.overview.eventAnalyticsList.infiniteQueryOptions(
@@ -109,6 +166,7 @@ export function EventTreeTable({
     input,
     metrics,
     columnWidth,
+    compareCount,
     sort: sort.key,
     dir: sort.dir,
     showPct,
@@ -168,30 +226,43 @@ export function EventTreeTable({
       {/* Metric columns are fixed-width; below the track width the card
           scrolls horizontally instead of clipping the right-hand columns. */}
       <div className="overflow-x-auto">
-        <div style={{ minWidth: tableMinWidth(metrics.length) }}>
+        <div style={{ minWidth }}>
       <div className="flex min-h-[38px] items-center border-b bg-muted/40">
-        <div className="min-w-0 flex-1 pl-3.5 text-[11px] font-medium tracking-wide text-muted-foreground">
+        <div
+          className={cn(
+            'min-w-0 pl-3.5 text-[11px] font-medium tracking-wide text-muted-foreground',
+            compareCount === null && 'flex-1',
+          )}
+          style={labelTrackStyle(compareCount)}
+        >
           EVENT › PROPERTY › VALUE › NESTED KEY
         </div>
-        {metrics.map((metric) => {
-          const key = metricKey(metric);
+        {columns.map((column) => {
+          // Sorting is by the metric of period A whichever header is clicked,
+          // so the arrow marks that metric's first column (§3 D7).
+          const active = sort.key === column.sortKey && column.period === 0;
           return (
             <button
-              key={key}
+              key={column.key}
               type="button"
               style={cellStyle(columnWidth)}
               className={cn(
                 'flex shrink-0 items-center justify-end gap-[5px] py-1.5 pr-[18px] pl-1.5 text-[11px] font-medium tracking-wide hover:text-foreground',
-                sort.key === key ? 'text-foreground' : 'text-muted-foreground',
+                active ? 'text-foreground' : 'text-muted-foreground',
               )}
-              onClick={() => onSortChange(nextSort(sort, key))}
+              onClick={() => onSortChange(nextSort(sort, column.sortKey))}
             >
               {/* Long labels wrap rather than widen the column. */}
               <span className="text-right leading-[1.3]">
-                {metricColumnLabel(metric)}
+                {column.label}
+                {column.sub ? (
+                  <span className="mt-[3px] block font-normal text-muted-foreground">
+                    {column.sub}
+                  </span>
+                ) : null}
               </span>
               <span className="w-2 shrink-0 font-mono text-[10px]">
-                {sortArrow(sort, key)}
+                {active ? sortArrow(sort, column.sortKey) : ''}
               </span>
             </button>
           );
@@ -199,19 +270,44 @@ export function EventTreeTable({
       </div>
 
       <div className="flex h-[50px] items-center border-b bg-muted/60">
-        <div className="flex min-w-0 flex-1 items-center gap-2.5 pl-3.5">
-          <span className="text-[13px] font-semibold">Totals and averages</span>
+        <div
+          className={cn(
+            'flex min-w-0 items-center gap-2.5 pl-3.5',
+            compareCount === null && 'flex-1',
+          )}
+          style={labelTrackStyle(compareCount)}
+        >
+          <span className="whitespace-nowrap text-[13px] font-semibold">
+            Totals and averages
+          </span>
           <span className="flex h-[18px] items-center rounded-full border bg-background px-1.5 text-[10px] font-semibold tracking-wide text-muted-foreground">
             DEDUPLICATED
           </span>
         </div>
-        {metrics.map((metric) => (
-          <TotalsCell
-            key={metricKey(metric)}
-            width={columnWidth}
-            {...totalsCell(metric, totals)}
-          />
-        ))}
+        {compareCount === null
+          ? metrics.map((metric) => (
+              <TotalsCell
+                key={metricKey(metric)}
+                width={columnWidth}
+                {...totalsCell(metric, totals)}
+              />
+            ))
+          : // The totals of every period come from the totals query, so a
+            // non-additive metric is never summed over the branches (§3 D2).
+            comparisonTableCells(
+              metrics,
+              compareCount,
+              totals,
+              totals,
+              showPct,
+            ).map((cell) => (
+              <ComparisonTotalsCell
+                key={cell.column.key}
+                width={columnWidth}
+                value={cell.value.value}
+                delta={cell.delta}
+              />
+            ))}
       </div>
 
       {/* Padded to 40px so the note starts under the row labels, not under the
@@ -271,7 +367,12 @@ export function EventTreeTable({
       ) : null}
 
       <div className="flex h-11 items-center gap-2.5 px-3.5 text-[12px] text-muted-foreground">
-        <span>Children load on expand</span>
+        <span>
+          Children load on expand
+          {comparison
+            ? ` — ${comparisonFooterLabel(comparison.ranges)}`
+            : null}
+        </span>
         <div className="flex-1" />
         {listQuery.hasNextPage ? (
           <button
