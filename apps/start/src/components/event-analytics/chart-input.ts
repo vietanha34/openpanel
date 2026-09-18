@@ -7,6 +7,7 @@ import {
   type IChartType,
   type IEventAnalyticsMetric,
   type IEventAnalyticsMetricId,
+  type IEventAnalyticsPeriod,
   type IFilterGroup,
   type IInterval,
   type IReportInput,
@@ -183,3 +184,24 @@ export function buildEventAnalyticsChartInput({
   };
 }
 
+
+/**
+ * One query input per comparison period, newest first (§3 D1, chart side).
+ *
+ * The inputs come from `buildEventAnalyticsChartInput`, so a period differs
+ * from the plain chart only in its dates: same metric segment, same filters,
+ * same interval. Any drift between the compare numbers and the ordinary chart
+ * numbers would have to be a drift in this one builder.
+ */
+export function buildComparisonChartInputs(
+  args: BuildChartInputArgs & { periods: IEventAnalyticsPeriod[] },
+): ReturnType<typeof buildEventAnalyticsChartInput>[] {
+  const { periods, ...rest } = args;
+  const base = buildEventAnalyticsChartInput(rest);
+
+  return periods.map((period) => ({
+    ...base,
+    startDate: period.startDate,
+    endDate: period.endDate,
+  }));
+}
