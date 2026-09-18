@@ -8,13 +8,20 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
+import { useNumber } from '@/hooks/use-numer-formatter';
+import { useTRPC } from '@/integrations/trpc/react';
+import { cn } from '@/utils/cn';
+import { getChartColor } from '@/utils/theme';
+import { useQueries } from '@tanstack/react-query';
 import {
   ChartColumnIcon,
   ChartLineIcon,
+  Columns3Icon,
+  LayersIcon,
   Minimize2Icon,
   MoveDiagonalIcon,
 } from 'lucide-react';
-import { useMemo, useState } from 'react';
+import { type MouseEvent, useMemo, useState } from 'react';
 
 import {
   type IChartEventFilter,
@@ -30,11 +37,31 @@ import type {
   EventAnalyticsSelection,
 } from './chart-input';
 import {
+  buildComparisonChartInputs,
   buildEventAnalyticsChartInput,
   chartSegmentFor,
   resolveChartMetric,
 } from './chart-input';
+import {
+  buildOverlay,
+  legendRows,
+  mergeComparisonSeries,
+  tooltipColumns,
+  tooltipRows,
+  tooltipWidth,
+  OVERLAY_HEIGHT,
+  OVERLAY_WIDTH,
+} from './comparison-chart';
+import {
+  COMPARISON_MARKS,
+  type BaselinePeriod,
+  type ComparisonState,
+  comparisonPeriodChips,
+  periodsForRequest,
+  toggleFocusPeriod,
+} from './comparison-state';
 import { chipLabel } from './metrics-state';
+import { axisLabel } from './periods';
 
 export type {
   EventAnalyticsChartGranularity,
@@ -63,6 +90,11 @@ type EventAnalyticsChartProps = {
   onMetricChange: (metric: string) => void;
   collapsed: boolean;
   onCollapsedChange: (collapsed: boolean) => void;
+  /** Comparison mode; absent means the plain one-period chart. */
+  comparison?: ComparisonState;
+  /** The period comparison steps back from, or null for a range it cannot. */
+  baseline?: BaselinePeriod | null;
+  onComparisonChange?: (next: ComparisonState) => void;
 };
 
 export function EventAnalyticsChart({
@@ -78,6 +110,9 @@ export function EventAnalyticsChart({
   onMetricChange,
   collapsed,
   onCollapsedChange,
+  comparison,
+  baseline,
+  onComparisonChange,
 }: EventAnalyticsChartProps) {
   const metric = useMemo(
     () => resolveChartMetric(metrics, storedMetric),
@@ -115,6 +150,50 @@ export function EventAnalyticsChart({
       chartType,
     ],
   );
+
+  const comparing = Boolean(comparison?.compare && baseline);
+  const comparisonInputs = useMemo(() => {
+    if (!(comparison && baseline && comparing)) {
+      return [];
+    }
+    const periods = periodsForRequest(
+      comparison,
+      baseline.anchorStart,
+      baseline.periodDays,
+    );
+    if (!periods) {
+      return [];
+    }
+    // Same builder as the plain chart: only the dates differ, so a compared
+    // number can never drift from the number the ordinary chart shows.
+    return buildComparisonChartInputs({
+      projectId,
+      range,
+      startDate,
+      endDate,
+      filters,
+      filterGroup,
+      selected,
+      metric,
+      granularity,
+      chartType,
+      periods,
+    });
+  }, [
+    comparison,
+    baseline,
+    comparing,
+    projectId,
+    range,
+    startDate,
+    endDate,
+    filters,
+    filterGroup,
+    selected,
+    metric,
+    granularity,
+    chartType,
+  ]);
 
   // Not rendering ReportChart is what keeps its query from running (§7).
   if (collapsed) {
@@ -167,6 +246,32 @@ export function EventAnalyticsChart({
             ? `${selected.length} series plotted`
             : 'no series plotted'}
         </span>
+        {comparing && comparison && onComparisonChange && (
+          <ToggleGroup
+            type="single"
+            size="sm"
+            variant="outline"
+            value={comparison.compareView}
+            onValueChange={(value) =>
+              value &&
+              onComparisonChange({
+                ...comparison,
+                compareView: value as ComparisonState['compareView'],
+                // Split has no isolate; overlay keeps whatever was focused.
+                focusPeriod: value === 'split' ? -1 : comparison.focusPeriod,
+              })
+            }
+          >
+            <ToggleGroupItem value="overlay" aria-label="Overlay">
+              <LayersIcon size={14} />
+              Overlay
+            </ToggleGroupItem>
+            <ToggleGroupItem value="split" aria-label="Split">
+              <Columns3Icon size={14} />
+              Split
+            </ToggleGroupItem>
+          </ToggleGroup>
+        )}
         <div className="flex-1" />
         <ToggleGroup
           type="single"
@@ -210,15 +315,314 @@ export function EventAnalyticsChart({
           <Minimize2Icon size={15} />
         </Button>
       </div>
+      {comparing && comparison && baseline ? (
+        <ComparisonChart
+          baseline={baseline}
+          inputs={comparisonInputs}
+          onComparisonChange={onComparisonChange}
+          state={comparison}
+        />
+      ) : (
+        <div className="p-3">
+          {report.series.length === 0 ? (
+            <div className="center-center h-40 text-muted-foreground text-sm">
+              Select rows in the table to plot them
+            </div>
+          ) : (
+            <ReportChart report={report} options={{}} />
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Tooltip and panel delta colours, from the design. */
+const DELTA_UP = '#34d399';
+const DELTA_DOWN = '#f87171';
+
+type ComparisonChartProps = {
+  inputs: ReturnType<typeof buildComparisonChartInputs>;
+  state: ComparisonState;
+  baseline: BaselinePeriod;
+  onComparisonChange?: (next: ComparisonState) => void;
+};
+
+/**
+ * The overlay view (design 3c / 3e): one line per period per series, all in the
+ * series' colour, told apart by weight, opacity and dash.
+ *
+ * `ReportChart` cannot express that — its options carry no per-series stroke and
+ * no custom tooltip, and it fetches internally — so comparison draws its own
+ * SVG from the same query the ordinary chart uses. The plain chart above is
+ * untouched.
+ */
+function ComparisonChart({
+  inputs,
+  state,
+  baseline,
+  onComparisonChange,
+}: ComparisonChartProps) {
+  const trpc = useTRPC();
+  const number = useNumber();
+  const [hoverBucket, setHoverBucket] = useState<number | null>(null);
+
+  const results = useQueries({
+    queries: inputs.map((input) => trpc.chart.chart.queryOptions(input)),
+  });
+  const series = mergeComparisonSeries(
+    results.map((result) => result.data),
+    getChartColor,
+  );
+  const overlay = buildOverlay({
+    series,
+    periodCount: inputs.length,
+    focusPeriod: state.focusPeriod,
+  });
+  // The x axis is period A's own dates.
+  const dates = results[0]?.data?.series[0]?.data.map((point) => point.date) ?? [];
+  const chips = comparisonPeriodChips(
+    state,
+    baseline.anchorStart,
+    baseline.periodDays,
+  );
+  const bucket =
+    hoverBucket === null
+      ? null
+      : Math.min(Math.max(hoverBucket, 0), Math.max(0, overlay.buckets - 1));
+
+  const readDelta = (delta: number | null) => {
+    if (delta === null) {
+      // Nothing to compare against — never `0.00 %`, which would claim
+      // "unchanged" (spec A3).
+      return { text: '—', color: 'inherit' };
+    }
+    if (Math.abs(delta) < 0.005) {
+      return { text: '', color: 'inherit' };
+    }
+    return {
+      text: `${delta > 0 ? '+' : ''}${delta.toFixed(2)}%`,
+      color: delta > 0 ? DELTA_UP : DELTA_DOWN,
+    };
+  };
+
+  if (state.compareView === 'split') {
+    return (
       <div className="p-3">
-        {report.series.length === 0 ? (
+        <div className="center-center h-40 rounded-lg border border-dashed text-muted-foreground text-sm">
+          Split view arrives with T8 — use Overlay for now
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <>
+      <div className="row flex-wrap items-center gap-2 border-b px-3.5 py-2.5">
+        <span className="font-medium text-[11px] text-muted-foreground tracking-wide">
+          PERIODS
+        </span>
+        {chips.map((chip) => (
+          <button
+            className={cn(
+              'row h-[26px] items-center gap-1.5 rounded-full border px-2.5 text-[12px]',
+              state.focusPeriod === chip.index
+                ? 'bg-foreground text-background'
+                : 'bg-background hover:bg-def-100',
+            )}
+            key={chip.letter}
+            onClick={() =>
+              onComparisonChange?.(toggleFocusPeriod(state, chip.index))
+            }
+            type="button"
+          >
+            <span className="font-mono font-semibold text-[11px]">
+              {chip.letter}
+            </span>
+            <span className="font-mono text-[11px] opacity-70">
+              {COMPARISON_MARKS[chip.index]}
+            </span>
+            {chip.range}
+          </button>
+        ))}
+        <span className="text-[11px] text-muted-foreground">
+          Click a period to isolate it · line weight fades with age
+        </span>
+      </div>
+      <div className="relative p-3.5">
+        {series.length === 0 ? (
           <div className="center-center h-40 text-muted-foreground text-sm">
-            Select rows in the table to plot them
+            {results.some((result) => result.isLoading)
+              ? 'Loading trend…'
+              : 'Select rows in the table to plot them'}
           </div>
         ) : (
-          <ReportChart report={report} options={{}} />
+          <>
+            <button
+              className="block w-full cursor-crosshair"
+              onMouseLeave={() => setHoverBucket(null)}
+              onMouseMove={(event: MouseEvent<HTMLButtonElement>) => {
+                const rect = event.currentTarget.getBoundingClientRect();
+                const ratio = (event.clientX - rect.left) / rect.width;
+                setHoverBucket(
+                  Math.round(ratio * Math.max(0, overlay.buckets - 1)),
+                );
+              }}
+              type="button"
+            >
+              <svg
+                aria-label="Comparison overlay"
+                className="block w-full overflow-visible"
+                height={OVERLAY_HEIGHT}
+                preserveAspectRatio="none"
+                role="img"
+                viewBox={`0 0 ${OVERLAY_WIDTH} ${OVERLAY_HEIGHT}`}
+              >
+                {overlay.grid.map((line) => (
+                  <line
+                    key={line.y}
+                    stroke="currentColor"
+                    strokeWidth={1}
+                    className="text-border"
+                    vectorEffect="non-scaling-stroke"
+                    x1={0}
+                    x2={OVERLAY_WIDTH}
+                    y1={line.y}
+                    y2={line.y}
+                  />
+                ))}
+                {overlay.lines.map((line) => (
+                  <path
+                    d={line.path}
+                    fill="none"
+                    key={`${line.key}-${line.period}`}
+                    stroke={line.color}
+                    strokeDasharray={line.dash}
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeOpacity={line.opacity}
+                    strokeWidth={line.width}
+                    vectorEffect="non-scaling-stroke"
+                  />
+                ))}
+                {bucket !== null && (
+                  <line
+                    stroke="#798290"
+                    strokeWidth={1}
+                    vectorEffect="non-scaling-stroke"
+                    x1={overlay.crosshairX(bucket)}
+                    x2={overlay.crosshairX(bucket)}
+                    y1={0}
+                    y2={OVERLAY_HEIGHT}
+                  />
+                )}
+              </svg>
+            </button>
+            <div className="row justify-between pt-2">
+              {dates.map((date) => (
+                <span
+                  className="font-mono text-[10px] text-muted-foreground"
+                  key={date}
+                >
+                  {axisLabel(new Date(date))}
+                </span>
+              ))}
+            </div>
+            <div className="row flex-wrap items-center gap-4 border-t pt-2.5">
+              {legendRows({ series, periodCount: inputs.length }).map((row) => (
+                <div className="row items-center gap-1.5" key={row.key}>
+                  <span
+                    className="size-[9px] rounded-[2px]"
+                    style={{ background: row.color }}
+                  />
+                  <span className="font-mono text-[11px]">{row.label}</span>
+                  {row.cells.map((cell, index) => (
+                    <span
+                      className={cn(
+                        'font-mono text-[11px]',
+                        index === 0
+                          ? 'text-muted-foreground'
+                          : 'text-def-400',
+                      )}
+                      key={cell.mark}
+                    >
+                      {cell.mark} {number.short(cell.total)}
+                    </span>
+                  ))}
+                </div>
+              ))}
+            </div>
+            {bucket !== null && (
+              <div
+                className="pointer-events-none absolute top-[-6px] z-30 rounded-lg bg-foreground px-3.5 py-3 text-background shadow-lg"
+                style={{
+                  left: `${(bucket / Math.max(1, overlay.buckets - 1)) * 100}%`,
+                  transform: 'translateX(-40%)',
+                  width: tooltipWidth(inputs.length),
+                }}
+              >
+                <div className="row items-center gap-3 pb-2">
+                  <span className="flex-1 font-semibold text-[12px]">
+                    Compare periods
+                  </span>
+                  {tooltipColumns({
+                    anchorStart: baseline.anchorStart,
+                    periodDays: baseline.periodDays,
+                    periodCount: inputs.length,
+                    bucket,
+                  }).map((column) => (
+                    <span
+                      className="w-[92px] shrink-0 text-right font-mono text-[11px] opacity-80"
+                      key={column.label}
+                    >
+                      {column.mark} {column.label}
+                    </span>
+                  ))}
+                </div>
+                {tooltipRows({
+                  series,
+                  periodCount: inputs.length,
+                  bucket,
+                }).map((row) => (
+                  <div className="row items-center gap-3 pt-1" key={row.key}>
+                    <span
+                      className="size-2 shrink-0 rounded-full"
+                      style={{ background: row.color }}
+                    />
+                    <span className="flex-1 truncate text-[12px]">
+                      {row.label}
+                    </span>
+                    {row.cells.map((cell, index) => {
+                      const delta = readDelta(
+                        index === 0 ? 0 : cell.delta,
+                      );
+                      return (
+                        <span
+                          className="w-[92px] shrink-0 text-right font-mono text-[12px]"
+                          key={`period-${index}`}
+                        >
+                          {/* Δ first, then the value (design 3c). */}
+                          <span
+                            className="mr-1.5 text-[10px]"
+                            style={{ color: delta.color }}
+                          >
+                            {delta.text}
+                          </span>
+                          {number.short(cell.value)}
+                        </span>
+                      );
+                    })}
+                  </div>
+                ))}
+                <div className="mt-2 border-white/15 border-t pt-2 font-mono text-[10px] opacity-70">
+                  {dates[bucket] ? axisLabel(new Date(dates[bucket])) : ''} · A
+                  solid, earlier periods dashed · Δ vs A
+                </div>
+              </div>
+            )}
+          </>
         )}
       </div>
-    </div>
+    </>
   );
 }

@@ -292,6 +292,9 @@ function EventAnalytics() {
       </div>
       <EventAnalyticsChart
         {...input}
+        baseline={baseline}
+        comparison={comparison}
+        onComparisonChange={setComparison}
         selected={selected}
         metrics={prefs.metrics}
         metric={prefs.chart.metric}
