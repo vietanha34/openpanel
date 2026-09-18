@@ -33,6 +33,12 @@ export const EVENT_ANALYTICS_MAX_PARENT_PATH = 1;
  */
 export const EVENT_ANALYTICS_MAX_METRICS = 10;
 
+/**
+ * How many periods one comparison may hold, baseline included (Phase 3 R3 §8).
+ * Declared before the schema that reads it in `.max(...)`.
+ */
+export const EVENT_ANALYTICS_MAX_PERIODS = 4;
+
 export type IEventAnalyticsMetricGroup = 'events' | 'users';
 
 export type IEventAnalyticsMetricDef = {
@@ -193,6 +199,34 @@ export function metricKey(metric: IEventAnalyticsMetric): string {
 }
 
 /** Sort keys that predate the metric catalogue and stay valid forever. */
+/** One comparison period. `periods[0]` is the baseline the UI labels A. */
+export const zEventAnalyticsPeriod = z.object({
+  startDate: z.string(),
+  endDate: z.string(),
+});
+
+export type IEventAnalyticsPeriod = z.infer<typeof zEventAnalyticsPeriod>;
+
+const PERIOD_LABELS = ['A', 'B', 'C', 'D'] as const;
+
+/** The letter the UI shows for a period index. */
+export function periodLabel(index: number): string {
+  return PERIOD_LABELS[index] ?? String(index + 1);
+}
+
+/** `sort` may carry the clicked column's period, e.g. `events:B`. */
+const PERIOD_SORT_SUFFIX = /:(A|B|C|D)$/;
+
+/**
+ * The metric a `sort` value names, with any period suffix removed.
+ *
+ * Clicking period B's column sorts by that metric of period A, so the rows keep
+ * one order across every period (Phase 3 §3 D7).
+ */
+export function sortKeyWithoutPeriod(sort: string): string {
+  return sort.replace(PERIOD_SORT_SUFFIX, '');
+}
+
 const LEGACY_SORT_KEYS = ['events', 'users', 'epu'] as const;
 
 // `epau` is deliberately NOT here: it is a catalogue metric, so it becomes a
@@ -285,6 +319,97 @@ const zEventAnalyticsParentPath = z
   .array(zEventAnalyticsParentPathItem)
   .max(EVENT_ANALYTICS_MAX_PARENT_PATH);
 
+
+const PERIOD_DAY_MS = 24 * 60 * 60 * 1000;
+
+function periodBounds(period: IEventAnalyticsPeriod): [number, number] | null {
+  const start = Date.parse(period.startDate.replace(' ', 'T'));
+  const end = Date.parse(period.endDate.replace(' ', 'T'));
+  return Number.isNaN(start) || Number.isNaN(end) ? null : [start, end];
+}
+
+/**
+ * Periods must be the same length and must not overlap (invariant I10).
+ *
+ * Same length: a comparison where one column covers 7 days and another 30 puts
+ * two different questions under one header. The UI locks the length to the
+ * baseline's; this rejects a hand-written payload that does not.
+ *
+ * No overlap: an event inside two periods would be counted twice, and every
+ * total below it would stop meaning anything.
+ */
+function refinePeriods(
+  periods: IEventAnalyticsPeriod[],
+  ctx: z.RefinementCtx,
+): void {
+  if (periods.length === 0) {
+    // `.min(1)` already reported it; without this the baseline read below
+    // would throw instead of collecting issues.
+    return;
+  }
+
+  const bounds: [number, number][] = [];
+
+  for (const [index, period] of periods.entries()) {
+    const parsed = periodBounds(period);
+    if (!parsed) {
+      ctx.addIssue({
+        code: 'custom',
+        path: [index],
+        message: 'Period dates must be parseable timestamps',
+      });
+      return;
+    }
+    if (parsed[1] <= parsed[0]) {
+      ctx.addIssue({
+        code: 'custom',
+        path: [index],
+        message: 'A period must end after it starts',
+      });
+      return;
+    }
+    bounds.push(parsed);
+  }
+
+  // Compare in whole days: the UI builds a period as [00:00:00, 23:59:59], so
+  // two 7-day periods differ by a second, not by nothing.
+  const days = ([start, end]: [number, number]) =>
+    Math.round((end - start) / PERIOD_DAY_MS);
+  const baselineDays = days(bounds[0] as [number, number]);
+
+  for (const [index, bound] of bounds.entries()) {
+    if (days(bound) !== baselineDays) {
+      ctx.addIssue({
+        code: 'custom',
+        path: [index],
+        message: `Every period must have the same length as the baseline (${baselineDays} days)`,
+      });
+    }
+  }
+
+  const sorted = bounds
+    .map((bound, index) => ({ bound, index }))
+    .sort((a, b) => a.bound[0] - b.bound[0]);
+
+  for (let i = 1; i < sorted.length; i++) {
+    const previous = sorted[i - 1];
+    const current = sorted[i];
+    if (previous && current && current.bound[0] <= previous.bound[1]) {
+      ctx.addIssue({
+        code: 'custom',
+        path: [current.index],
+        message: 'Periods must not overlap',
+      });
+    }
+  }
+}
+
+const zEventAnalyticsPeriods = z
+  .array(zEventAnalyticsPeriod)
+  .min(1)
+  .max(EVENT_ANALYTICS_MAX_PERIODS)
+  .superRefine(refinePeriods);
+
 /** Date range + filters every event analytics endpoint takes. */
 export const zEventAnalyticsRange = z.object({
   projectId: z.string(),
@@ -302,6 +427,11 @@ export const zEventAnalyticsRange = z.object({
    * `users` only.
    */
   metrics: zEventAnalyticsMetrics.optional(),
+  /**
+   * Comparison periods, baseline first. Absent means one period and the SQL is
+   * unchanged. See the Phase 3 spec §4.
+   */
+  periods: zEventAnalyticsPeriods.optional(),
 });
 
 /**
@@ -314,7 +444,7 @@ function refineSort(
   input: { sort: string; metrics?: IEventAnalyticsMetric[] },
   ctx: z.RefinementCtx,
 ): void {
-  if (!allowedSortKeys(input.metrics).includes(input.sort)) {
+  if (!allowedSortKeys(input.metrics).includes(sortKeyWithoutPeriod(input.sort))) {
     ctx.addIssue({
       code: 'custom',
       path: ['sort'],
@@ -387,6 +517,16 @@ export type IEventAnalyticsMetricRow = {
   events: number;
   users: number;
   metrics?: Record<string, number>;
+  /**
+   * One entry per requested period, baseline first, present only when the
+   * request asked for more than one. `periods[0]` repeats the three fields
+   * above, so every existing reader keeps working untouched.
+   */
+  periods?: Array<{
+    events: number;
+    users: number;
+    metrics?: Record<string, number>;
+  }>;
 };
 
 export type IEventAnalyticsListRow = IEventAnalyticsMetricRow & {
