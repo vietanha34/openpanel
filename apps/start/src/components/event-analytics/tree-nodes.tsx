@@ -15,11 +15,17 @@ import type {
 } from '@openpanel/validation';
 import {
   EVENT_ANALYTICS_MAX_PARENT_PATH,
+  type IEventAnalyticsPeriod,
   metricKey,
 } from '@openpanel/validation';
 import { useInfiniteQuery } from '@tanstack/react-query';
 import { ChevronRight, Plus, RotateCw } from 'lucide-react';
 import { useState } from 'react';
+import {
+  COMPARISON_LABEL_PX,
+  type DeltaTone,
+  comparisonTableCells,
+} from './comparison-columns';
 import {
   type TreeNodeKind,
   badgeFor,
@@ -41,6 +47,8 @@ export type EventAnalyticsRangeInput = {
   filters: IChartEventFilter[];
   /** Advanced filters (AND/OR groups). Wins over `filters` when present. */
   filterGroup?: IFilterGroup;
+  /** Comparison periods, baseline first. Absent outside comparison mode. */
+  periods?: IEventAnalyticsPeriod[];
 };
 
 /** Shared with T5: the chart plots exactly these paths, in these colours. */
@@ -55,6 +63,8 @@ export type TreeContextValue = {
   /** Column order and width of the table (design 2c). */
   metrics: IEventAnalyticsMetric[];
   columnWidth: number;
+  /** Number of comparison periods, or `null` outside comparison mode. */
+  compareCount: number | null;
   sort: IEventAnalyticsSortKey;
   dir: IEventAnalyticsSortDir;
   showPct: boolean;
@@ -90,25 +100,47 @@ function selectedColor(selection: TreeSelection, path: string) {
   return selection.selected.find((item) => item.path === path)?.color ?? null;
 }
 
+/** Design 3b: green up, red down, grey when flat or without a baseline. */
+export const DELTA_TONE_CLASS: Record<DeltaTone, string> = {
+  up: 'text-emerald-700',
+  down: 'text-red-600',
+  flat: 'text-muted-foreground',
+};
+
 function MetricCell({
   value,
   sub,
   width,
+  tone,
 }: {
   value: string;
   sub?: string | null;
   width: number;
+  /** Set when `sub` is a delta rather than a share. */
+  tone?: DeltaTone;
 }) {
   return (
     <div className={CELL} style={cellStyle(width)}>
       <div className="font-mono text-[13px]">{value}</div>
       {sub ? (
-        <div className="mt-0.5 font-mono text-[11px] text-muted-foreground">
+        <div
+          className={cn(
+            'mt-0.5 font-mono text-[11px]',
+            tone ? DELTA_TONE_CLASS[tone] : 'text-muted-foreground',
+          )}
+        >
           {sub}
         </div>
       ) : null}
     </div>
   );
+}
+
+/** The name track is pinned in comparison mode and elastic otherwise. */
+export function labelTrackStyle(compareCount: number | null) {
+  return compareCount === null
+    ? undefined
+    : { flex: `0 0 ${COMPARISON_LABEL_PX}px` };
 }
 
 function TreeRow({
@@ -146,8 +178,11 @@ function TreeRow({
       )}
     >
       <div
-        className="flex min-w-0 flex-1 items-center gap-2.5 py-2"
-        style={indentStyle(depth)}
+        className={cn(
+          'flex min-w-0 items-center gap-2.5 py-2',
+          ctx.compareCount === null && 'flex-1',
+        )}
+        style={{ ...indentStyle(depth), ...labelTrackStyle(ctx.compareCount) }}
       >
         {/* The design puts the chevron before the checkbox, so the tree's
             structure reads first and the plot toggle second. */}
@@ -193,7 +228,9 @@ function TreeRow({
           </span>
           <span
             className={cn(
-              'truncate font-mono text-[13px]',
+              // min-w keeps the name readable instead of collapsing to 0 once
+              // the comparison columns take the rest of the row.
+              'min-w-[48px] flex-1 truncate font-mono text-[13px]',
               kind === 'event' && 'font-semibold',
               (kind === 'key' || kind === 'obj') && 'font-medium',
               kind === 'leaf' && 'text-muted-foreground',
@@ -214,13 +251,30 @@ function TreeRow({
           ) : null}
         </button>
       </div>
-      {ctx.metrics.map((column) => (
-        <MetricCell
-          key={metricKey(column)}
-          width={ctx.columnWidth}
-          {...metricCell(column, metric, ctx.totals, ctx.showPct)}
-        />
-      ))}
+      {ctx.compareCount === null
+        ? ctx.metrics.map((column) => (
+            <MetricCell
+              key={metricKey(column)}
+              width={ctx.columnWidth}
+              {...metricCell(column, metric, ctx.totals, ctx.showPct)}
+            />
+          ))
+        : comparisonTableCells(
+            ctx.metrics,
+            ctx.compareCount,
+            metric,
+            ctx.totals,
+            ctx.showPct,
+          ).map((cell) => (
+            <MetricCell
+              key={cell.column.key}
+              width={ctx.columnWidth}
+              value={cell.value.value}
+              // B-D spend the second line on the delta instead of a share.
+              sub={cell.delta ? cell.delta.text : cell.value.sub}
+              tone={cell.delta?.tone}
+            />
+          ))}
     </div>
   );
 }
