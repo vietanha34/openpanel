@@ -10,6 +10,7 @@ import {
   PERIOD_WIDTHS,
   buildOverlay,
   legendRows,
+  mergeComparisonSeries,
   overlayScale,
   periodLineStyle,
   tooltipColumns,
@@ -298,5 +299,70 @@ describe('legend', () => {
         ],
       },
     ]);
+  });
+});
+
+describe('mergeComparisonSeries', () => {
+  const period = (series: { names: string[]; counts: number[] }[]) => ({
+    series: series.map((serie, index) => ({
+      id: `id-${index}`,
+      names: serie.names,
+      data: serie.counts.map((count) => ({ count })),
+    })),
+  });
+  const colorAt = (index: number) => `#${index}`;
+
+  it('keeps period A order and colours by that order', () => {
+    const merged = mergeComparisonSeries(
+      [
+        period([
+          { names: ['level_start'], counts: [1, 2] },
+          { names: ['ads_inter_shown'], counts: [3, 4] },
+        ]),
+        period([
+          { names: ['ads_inter_shown'], counts: [5, 6] },
+          { names: ['level_start'], counts: [7, 8] },
+        ]),
+      ],
+      colorAt,
+    );
+
+    expect(merged.map((serie) => serie.label)).toEqual([
+      'level_start',
+      'ads_inter_shown',
+    ]);
+    expect(merged.map((serie) => serie.color)).toEqual(['#0', '#1']);
+    // Matched by name, not by position in the older period's response.
+    expect(merged[0]?.valuesByPeriod).toEqual([
+      [1, 2],
+      [7, 8],
+    ]);
+  });
+
+  it('joins breakdown names the way the table paths read', () => {
+    const merged = mergeComparisonSeries(
+      [period([{ names: ['level_start', 'hard'], counts: [1] }])],
+      colorAt,
+    );
+
+    expect(merged[0]?.label).toBe('level_start › hard');
+    expect(merged[0]?.key).toBe('level_start › hard');
+  });
+
+  it('leaves a period that never returned the series empty', () => {
+    const merged = mergeComparisonSeries(
+      [
+        period([{ names: ['level_start'], counts: [1, 2] }]),
+        period([{ names: ['other'], counts: [9] }]),
+      ],
+      colorAt,
+    );
+
+    expect(merged).toHaveLength(1);
+    expect(merged[0]?.valuesByPeriod).toEqual([[1, 2], []]);
+  });
+
+  it('is empty until period A has loaded', () => {
+    expect(mergeComparisonSeries([undefined, period([])], colorAt)).toEqual([]);
   });
 });

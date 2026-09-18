@@ -275,3 +275,45 @@ export function legendRows(input: {
     };
   });
 }
+
+/** The slice of a chart response this module needs. */
+export type ComparisonPeriodResult = {
+  series: {
+    names: string[];
+    data: { count: number }[];
+  }[];
+};
+
+/**
+ * One plotted series per row of period A, with every period's buckets behind
+ * it.
+ *
+ * Series are matched **by name**, not by position: a period where an event had
+ * no traffic returns fewer series, and lining them up by index would plot one
+ * event's history under another event's colour. Period A also fixes the order
+ * and therefore the colours, so isolating a period never recolours the chart.
+ */
+export function mergeComparisonSeries(
+  periods: (ComparisonPeriodResult | undefined)[],
+  colorAt: (index: number) => string,
+): ComparisonChartSerie[] {
+  const [baseline] = periods;
+  if (!baseline) {
+    return [];
+  }
+
+  return baseline.series.map((serie, index) => {
+    const label = serie.names.join(' › ');
+    return {
+      key: label,
+      label,
+      color: colorAt(index),
+      valuesByPeriod: periods.map(
+        (period) =>
+          period?.series
+            .find((candidate) => candidate.names.join(' › ') === label)
+            ?.data.map((point) => point.count) ?? [],
+      ),
+    };
+  });
+}
