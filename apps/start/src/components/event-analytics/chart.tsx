@@ -44,6 +44,7 @@ import {
 } from './chart-input';
 import {
   buildOverlay,
+  buildSplitPanels,
   legendRows,
   mergeComparisonSeries,
   tooltipColumns,
@@ -51,6 +52,7 @@ import {
   tooltipWidth,
   OVERLAY_HEIGHT,
   OVERLAY_WIDTH,
+  SPLIT_HEIGHT,
 } from './comparison-chart';
 import {
   COMPARISON_MARKS,
@@ -337,9 +339,12 @@ export function EventAnalyticsChart({
   );
 }
 
-/** Tooltip and panel delta colours, from the design. */
+/** Tooltip delta colours — read on the tooltip's dark background. */
 const DELTA_UP = '#34d399';
 const DELTA_DOWN = '#f87171';
+/** Split panel delta colours — read on white, so darker than the tooltip's. */
+const PANEL_DELTA_UP = '#047857';
+const PANEL_DELTA_DOWN = '#dc2626';
 
 type ComparisonChartProps = {
   inputs: ReturnType<typeof buildComparisonChartInputs>;
@@ -391,7 +396,10 @@ function ComparisonChart({
       ? null
       : Math.min(Math.max(hoverBucket, 0), Math.max(0, overlay.buckets - 1));
 
-  const readDelta = (delta: number | null) => {
+  const readDelta = (
+    delta: number | null,
+    colors: { up: string; down: string } = { up: DELTA_UP, down: DELTA_DOWN },
+  ) => {
     if (delta === null) {
       // Nothing to compare against — never `0.00 %`, which would claim
       // "unchanged" (spec A3).
@@ -402,16 +410,149 @@ function ComparisonChart({
     }
     return {
       text: `${delta > 0 ? '+' : ''}${delta.toFixed(2)}%`,
-      color: delta > 0 ? DELTA_UP : DELTA_DOWN,
+      color: delta > 0 ? colors.up : colors.down,
     };
   };
 
+  const bucketLabels = dates.map((date) => axisLabel(new Date(date)));
+
   if (state.compareView === 'split') {
+    const panels = buildSplitPanels({
+      series,
+      periodCount: inputs.length,
+      anchorStart: baseline.anchorStart,
+      periodDays: baseline.periodDays,
+      bucketLabels,
+    });
+
     return (
-      <div className="p-3">
-        <div className="center-center h-40 rounded-lg border border-dashed text-muted-foreground text-sm">
-          Split view arrives with T8 — use Overlay for now
-        </div>
+      <div className="col gap-3 p-3.5">
+        {panels.length === 0 ? (
+          <div className="center-center h-40 text-muted-foreground text-sm">
+            {results.some((result) => result.isLoading)
+              ? 'Loading trend…'
+              : 'Select rows in the table to plot them'}
+          </div>
+        ) : (
+          <>
+            <div className="row items-stretch gap-3">
+              {panels.map((panel) => {
+                const delta = readDelta(panel.delta, {
+                  up: PANEL_DELTA_UP,
+                  down: PANEL_DELTA_DOWN,
+                });
+                return (
+                  <button
+                    // Back to overlay, isolated on the panel that was clicked.
+                    className="col min-w-0 flex-1 basis-0 rounded-lg border bg-background px-2.5 pt-2.5 pb-2 text-left hover:bg-def-100"
+                    key={panel.letter}
+                    onClick={() =>
+                      onComparisonChange?.({
+                        ...state,
+                        compareView: 'overlay',
+                        focusPeriod: panel.period,
+                      })
+                    }
+                    type="button"
+                  >
+                    <div className="row items-center gap-1.5 pb-2">
+                      <span
+                        className={cn(
+                          'row size-[19px] items-center justify-center rounded-[5px] font-mono text-[11px] font-semibold',
+                          panel.period === 0
+                            ? 'bg-highlight/10 text-highlight'
+                            : 'bg-def-100 text-muted-foreground',
+                        )}
+                      >
+                        {panel.letter}
+                      </span>
+                      <span className="flex-1 truncate font-medium text-[12px]">
+                        {panel.range}
+                      </span>
+                      <span className="font-mono text-[10px] text-def-400">
+                        {panel.mark}
+                      </span>
+                    </div>
+                    <svg
+                      aria-label={`Period ${panel.letter}`}
+                      className="block w-full"
+                      height={SPLIT_HEIGHT}
+                      preserveAspectRatio="none"
+                      role="img"
+                      viewBox={`0 0 ${OVERLAY_WIDTH} ${SPLIT_HEIGHT}`}
+                    >
+                      {panel.grid.map((line) => (
+                        <line
+                          className="text-border"
+                          key={line.y}
+                          stroke="currentColor"
+                          strokeWidth={1}
+                          vectorEffect="non-scaling-stroke"
+                          x1={0}
+                          x2={OVERLAY_WIDTH}
+                          y1={line.y}
+                          y2={line.y}
+                        />
+                      ))}
+                      {panel.lines.map((line) => (
+                        <path
+                          d={line.path}
+                          fill="none"
+                          key={line.key}
+                          stroke={line.color}
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          strokeWidth={2}
+                          vectorEffect="non-scaling-stroke"
+                        />
+                      ))}
+                    </svg>
+                    <div className="row items-center gap-2 border-t pt-1.5">
+                      <span className="font-mono text-[10px] text-def-400">
+                        {panel.xFirst}
+                      </span>
+                      <span className="font-mono text-[10px] text-def-400">
+                        →
+                      </span>
+                      <span className="font-mono text-[10px] text-def-400">
+                        {panel.xLast}
+                      </span>
+                      <div className="flex-1" />
+                      <span className="font-mono font-semibold text-[12px]">
+                        {number.short(panel.total)}
+                      </span>
+                      <span
+                        className="font-mono text-[11px]"
+                        style={{
+                          color:
+                            panel.period === 0 ? undefined : delta.color,
+                        }}
+                      >
+                        {panel.period === 0 ? 'baseline' : delta.text}
+                      </span>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+            <div className="row flex-wrap items-center gap-4 border-t pt-2.5">
+              {series.map((serie) => (
+                <div className="row items-center gap-1.5" key={serie.key}>
+                  <span
+                    className="size-[9px] rounded-[2px]"
+                    style={{ background: serie.color }}
+                  />
+                  <span className="font-mono text-[11px]">{serie.label}</span>
+                </div>
+              ))}
+              <div className="flex-1" />
+              <span className="text-[11px] text-def-400">
+                {inputs.length} panels · shared y axis · Δ of all plotted series
+                vs A
+              </span>
+            </div>
+          </>
+        )}
       </div>
     );
   }
@@ -519,12 +660,12 @@ function ComparisonChart({
               </svg>
             </button>
             <div className="row justify-between pt-2">
-              {dates.map((date) => (
+              {bucketLabels.map((label) => (
                 <span
                   className="font-mono text-[10px] text-muted-foreground"
-                  key={date}
+                  key={label}
                 >
-                  {axisLabel(new Date(date))}
+                  {label}
                 </span>
               ))}
             </div>
@@ -615,8 +756,8 @@ function ComparisonChart({
                   </div>
                 ))}
                 <div className="mt-2 border-white/15 border-t pt-2 font-mono text-[10px] opacity-70">
-                  {dates[bucket] ? axisLabel(new Date(dates[bucket])) : ''} · A
-                  solid, earlier periods dashed · Δ vs A
+                  {bucketLabels[bucket] ?? ''} · A solid, earlier periods
+                  dashed · Δ vs A
                 </div>
               </div>
             )}

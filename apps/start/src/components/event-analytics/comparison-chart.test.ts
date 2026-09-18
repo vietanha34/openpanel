@@ -8,7 +8,9 @@ import {
   PERIOD_DASHES,
   PERIOD_OPACITY,
   PERIOD_WIDTHS,
+  SPLIT_HEIGHT,
   buildOverlay,
+  buildSplitPanels,
   legendRows,
   mergeComparisonSeries,
   overlayScale,
@@ -364,5 +366,150 @@ describe('mergeComparisonSeries', () => {
 
   it('is empty until period A has loaded', () => {
     expect(mergeComparisonSeries([undefined, period([])], colorAt)).toEqual([]);
+  });
+});
+
+describe('buildSplitPanels', () => {
+  const panelsOf = (periodCount: number, series = twoPeriods) =>
+    buildSplitPanels({
+      series,
+      periodCount,
+      anchorStart: new Date(2026, 8, 12),
+      periodDays: 7,
+      bucketLabels: ['12.09', '13.09', '14.09'],
+    });
+
+  it('builds one panel per period, newest first', () => {
+    const panels = panelsOf(2);
+
+    expect(panels.map((panel) => [panel.period, panel.letter])).toEqual([
+      [0, 'A'],
+      [1, 'B'],
+    ]);
+    expect(panels.map((panel) => panel.range)).toEqual([
+      'Sep 12 — 18',
+      'Sep 5 — 11',
+    ]);
+    expect(panels.map((panel) => panel.mark)).toEqual(['—', '– –']);
+  });
+
+  // Shared y axis: both panels use the overlay's max, so a taller period is
+  // visibly taller instead of every panel being normalised to its own peak.
+  it('plots every panel on the overlay scale', () => {
+    const panels = panelsOf(2);
+    const { max } = buildOverlay({
+      series: twoPeriods,
+      periodCount: 2,
+      focusPeriod: -1,
+    });
+    const yOf = (path: string) => path.split(',')[1]?.split(' ')[0];
+    const expected = (
+      SPLIT_HEIGHT -
+      (1 / max) * (SPLIT_HEIGHT - 10)
+    ).toFixed(1);
+
+    // Period A's first bucket is 1 on a scale whose max comes from 3.
+    expect(yOf(panels[0]!.lines[0]!.path)).toBe(expected);
+  });
+
+  it('draws the series solid, told apart by colour', () => {
+    const panels = panelsOf(2);
+
+    expect(panels[0]?.lines).toEqual([
+      { key: 'level_start', color: '#2563EB', path: expect.any(String) },
+    ]);
+  });
+
+  it('keeps A x positions in every panel', () => {
+    const panels = buildSplitPanels({
+      series: [
+        {
+          key: 'a',
+          label: 'a',
+          color: '#000',
+          valuesByPeriod: [
+            [1, 1, 1],
+            [1, 1],
+          ],
+        },
+      ],
+      periodCount: 2,
+      anchorStart: new Date(2026, 8, 12),
+      periodDays: 7,
+      bucketLabels: ['12.09', '13.09', '14.09'],
+    });
+    const xs = (path: string) =>
+      path
+        .slice(1)
+        .split(' L')
+        .map((point) => point.split(',')[0]);
+
+    expect(xs(panels[1]!.lines[0]!.path)).toEqual(['0.0', '500.0']);
+  });
+
+  it('gives each panel three grid lines', () => {
+    expect(panelsOf(2)[0]?.grid.map((line) => line.y)).toEqual([
+      '132.0',
+      '66.0',
+      '0.0',
+    ]);
+  });
+
+  it('totals every plotted series per period', () => {
+    const panels = panelsOf(2);
+
+    expect(panels.map((panel) => panel.total)).toEqual([6, 6]);
+  });
+
+  it('measures the delta of all series against A, and A has none', () => {
+    const panels = buildSplitPanels({
+      series: [
+        {
+          key: 'a',
+          label: 'a',
+          color: '#000',
+          valuesByPeriod: [[10], [5]],
+        },
+        {
+          key: 'b',
+          label: 'b',
+          color: '#111',
+          valuesByPeriod: [[10], [10]],
+        },
+      ],
+      periodCount: 2,
+      anchorStart: new Date(2026, 8, 12),
+      periodDays: 7,
+      bucketLabels: ['12.09'],
+    });
+
+    expect(panels[0]?.delta).toBeNull();
+    // (15 / 20 - 1) * 100
+    expect(panels[1]?.delta).toBeCloseTo(-25, 10);
+  });
+
+  it('has no delta when A totals zero', () => {
+    const panels = buildSplitPanels({
+      series: [
+        { key: 'a', label: 'a', color: '#000', valuesByPeriod: [[0], [4]] },
+      ],
+      periodCount: 2,
+      anchorStart: new Date(2026, 8, 12),
+      periodDays: 7,
+      bucketLabels: ['12.09'],
+    });
+
+    expect(panels[1]?.delta).toBeNull();
+  });
+
+  it('labels the first and last bucket of the axis', () => {
+    const panels = panelsOf(2);
+
+    expect(panels[0]?.xFirst).toBe('12.09');
+    expect(panels[0]?.xLast).toBe('14.09');
+  });
+
+  it('is empty without series', () => {
+    expect(panelsOf(2, [])).toEqual([]);
   });
 });
