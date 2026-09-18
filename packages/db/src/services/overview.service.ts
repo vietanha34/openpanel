@@ -360,9 +360,37 @@ function comparisonPeriods(
 /** A select entry: a plain column string, or raw SQL the builder must not touch. */
 type SelectColumn = string | ReturnType<typeof clix.exp>;
 
-/** `created_at` inside one period, for the `*If` aggregates. */
+/**
+ * `created_at` inside one period, for the `*If` aggregates.
+ *
+ * The bounds go through `clix.datetime` exactly like the enclosing range does.
+ * Writing the raw string here instead put the two on different clocks: the
+ * range was converted to UTC while the period condition was read in the query
+ * time zone, so an event near midnight belonged to period A for one and period
+ * B for the other.
+ */
 function eventAnalyticsPeriodCondition(period: IEventAnalyticsPeriod): string {
-  return `created_at BETWEEN toDateTime(${sqlstring.escape(period.startDate)}) AND toDateTime(${sqlstring.escape(period.endDate)})`;
+  const bound = (value: string) =>
+    `toDateTime(${sqlstring.escape(clix.datetime(value))})`;
+
+  return `created_at BETWEEN ${bound(period.startDate)} AND ${bound(period.endDate)}`;
+}
+
+/**
+ * Restricts the rows to those period A actually saw.
+ *
+ * Without it the `GROUP BY` runs over the union of every period, so an event
+ * that only a later period fired becomes a row whose baseline column is empty —
+ * and, worse, takes a slot in the page and pushes a real period-A row out of it
+ * (spec §3 D1: the server picks the rows by period A and computes every period
+ * on exactly that set). `events` is a `count()`, so "> 0" is precisely "period A
+ * saw this row". Applied as HAVING, so ORDER BY, LIMIT and OFFSET all act on the
+ * filtered set.
+ */
+function eventAnalyticsPeriodHaving(
+  periods: IEventAnalyticsPeriod[] | undefined
+): string | null {
+  return comparisonPeriods(periods) ? 'events_p0 > 0' : null;
 }
 
 /** The union of every period, so one scan covers them all. */
@@ -574,6 +602,11 @@ export function buildEventAnalyticsListQuery({
     .limit(limit + 1)
     .offset(cursor ?? 0);
 
+  const rowsSeenByBaseline = eventAnalyticsPeriodHaving(range.periods);
+  if (rowsSeenByBaseline) {
+    query.rawHaving(rowsSeenByBaseline);
+  }
+
   if (search) {
     query.rawWhere(
       `name ILIKE ${sqlstring.escape(`%${escapeLikeTerm(search)}%`)}`
@@ -609,6 +642,8 @@ export type IGetEventPropertyKeysInput = {
   cursor?: number;
   limit: number;
   metrics?: IEventAnalyticsMetric[];
+  /** Comparison periods, baseline first. See `buildEventAnalyticsBaseQuery`. */
+  periods?: IEventAnalyticsPeriod[];
 };
 
 /** Raw ClickHouse shape of one segment below the prefix. */
@@ -687,18 +722,18 @@ export function buildEventPropertyKeysQuery({
     .with('segments', segments)
     .select<EventPropertyKeySqlRow>([
       'segment AS key',
-      'count() AS events',
-      'uniqExact(profile_id) AS users',
+      ...eventAnalyticsCoreSelects(range.periods),
       `max(arrayExists(k -> startsWith(k, concat(${escapedPrefix}, segment, '.')), matched)) AS has_nested`,
       // Spec section 3: only non-empty values decide the type. An empty value
       // carries no type information, so it must not push the key to `str`.
       // A key whose values are all empty therefore lands on `num` -- deliberate:
       // there is nothing to parse and nothing to sort, so the rule stays simple.
       `countIf(properties[concat(${escapedPrefix}, segment)] != '' AND toFloat64OrNull(properties[concat(${escapedPrefix}, segment)]) IS NULL) AS non_numeric`,
-      ...eventAnalyticsMetricSelects(metrics),
+      ...eventAnalyticsMetricSelects(metrics, range.periods),
     ])
     .from('segments')
     .groupBy(['segment'])
+    .rawHaving(eventAnalyticsPeriodHaving(range.periods) ?? '')
     .orderBy('events', 'DESC')
     .orderBy('key', 'ASC')
     .limit(limit + 1)
@@ -821,6 +856,7 @@ export function buildEventPropertyValuesQuery({
     .from('base_values')
     .crossJoin('value_totals')
     .groupBy(['value', 'total_distinct'])
+    .rawHaving(eventAnalyticsPeriodHaving(range.periods) ?? '')
     .orderBy(
       eventAnalyticsSortColumn(sort, range.metrics, range.periods),
       dir === 'asc' ? 'ASC' : 'DESC'

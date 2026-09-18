@@ -1,9 +1,18 @@
 import { describe, expect, it } from 'vitest';
 
+import { clix } from '../clickhouse/query-builder';
 import {
   buildEventAnalyticsListQuery,
   buildEventAnalyticsTotalsQuery,
 } from './overview.service';
+
+/**
+ * How the builder writes a datetime bound. Asserting against this rather than
+ * against a hard-coded literal is the point: the bounds are converted, so a
+ * hard-coded string only matches on a machine running UTC — which is how the
+ * period conditions drifted onto a different clock unnoticed.
+ */
+const bound = (value: string) => `toDateTime('${clix.datetime(value)}')`;
 
 const base = {
   projectId: 'test-periods',
@@ -38,8 +47,10 @@ describe('multi-period event analytics SQL', () => {
   it('scans the union of the periods once', () => {
     const sql = sqlFor({ periods: twoWeeks });
 
-    expect(sql).toContain("created_at BETWEEN toDateTime('2026-09-05 00:00:00')");
-    expect(sql).toContain("toDateTime('2026-09-18 23:59:59')");
+    expect(sql).toContain(
+      `created_at BETWEEN ${bound('2026-09-05 00:00:00')}`
+    );
+    expect(sql).toContain(bound('2026-09-18 23:59:59'));
     // One scan, not one per period.
     expect(sql.match(/FROM events/g)).toHaveLength(1);
   });
@@ -48,10 +59,10 @@ describe('multi-period event analytics SQL', () => {
     const sql = sqlFor({ periods: twoWeeks });
 
     expect(sql).toContain(
-      "countIf(created_at BETWEEN toDateTime('2026-09-12 00:00:00') AND toDateTime('2026-09-18 23:59:59')) AS events_p0",
+      `countIf(created_at BETWEEN ${bound('2026-09-12 00:00:00')} AND ${bound('2026-09-18 23:59:59')}) AS events_p0`,
     );
     expect(sql).toContain(
-      "uniqExactIf(profile_id, created_at BETWEEN toDateTime('2026-09-05 00:00:00') AND toDateTime('2026-09-11 23:59:59')) AS users_p1",
+      `uniqExactIf(profile_id, created_at BETWEEN ${bound('2026-09-05 00:00:00')} AND ${bound('2026-09-11 23:59:59')}) AS users_p1`,
     );
     // A plain uniqExact over the union would count a user active in both
     // periods once instead of once per period.
@@ -101,5 +112,54 @@ describe('multi-period event analytics SQL', () => {
 
     expect(sql).toContain('AS events_p0');
     expect(sql).toContain('AS users_p1');
+  });
+});
+
+describe('period conditions share one clock with the enclosing range (T4-FIX)', () => {
+  // Written against the SQL, not against data: on a machine running UTC the
+  // conversion is the identity and an integration test passes either way. This
+  // one fails wherever the two forms diverge, CI included.
+  const shifted = {
+    ...base,
+    timezone: 'Asia/Bangkok',
+    startDate: '2026-03-03 00:00:00',
+    endDate: '2026-03-03 23:59:59',
+  };
+  const shiftedPeriods = [
+    { startDate: '2026-03-03 00:00:00', endDate: '2026-03-03 23:59:59' },
+    { startDate: '2026-03-02 00:00:00', endDate: '2026-03-02 23:59:59' },
+  ];
+
+  const sql = buildEventAnalyticsListQuery({
+    ...shifted,
+    ...listExtras,
+    periods: shiftedPeriods,
+  } as never).toSQL();
+
+  it('writes the period bounds in the same form as the range bounds', () => {
+    // The range bound period A repeats must appear twice: once enclosing the
+    // scan, once inside countIf.
+    const boundary = sql.match(/created_at BETWEEN toDateTime\('[^']+'\)/g);
+
+    expect(boundary).not.toBeNull();
+    expect(new Set(boundary).size).toBeLessThan((boundary as string[]).length);
+  });
+
+  it('never mixes a converted bound with a raw local one', () => {
+    // Every datetime literal in the query is the same shape; a raw local string
+    // next to a converted one is exactly the bug.
+    const literals = sql.match(/toDateTime\('([^']+)'\)/g) ?? [];
+
+    expect(literals.length).toBeGreaterThan(2);
+    expect(sql).not.toContain("toDateTime('2026-03-03 00:00:00')");
+  });
+
+  it('restricts the rows to the ones period A saw', () => {
+    expect(sql).toContain('HAVING');
+    expect(sql).toContain('events_p0 > 0');
+  });
+
+  it('adds no HAVING without periods, keeping the SQL byte-identical', () => {
+    expect(sqlFor({})).not.toContain('HAVING');
   });
 });
