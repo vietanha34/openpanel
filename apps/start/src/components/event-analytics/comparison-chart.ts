@@ -1,5 +1,7 @@
+import { periodLabel } from '@openpanel/validation';
+
 import { COMPARISON_MARKS } from './comparison-state';
-import { deltaPercent, longDate, shiftDays } from './periods';
+import { deltaPercent, longDate, periodRange, shiftDays } from './periods';
 
 /**
  * Geometry and numbers of the comparison overlay chart (Phase 3 §5.3, design
@@ -26,11 +28,15 @@ export const DIMMED_OPACITY = 0.12;
 
 export const OVERLAY_WIDTH = 1000;
 export const OVERLAY_HEIGHT = 236;
+/** A split panel's chart height (design 3f). */
+export const SPLIT_HEIGHT = 132;
 /** Headroom above the tallest point, so the peak is not glued to the top. */
 const SCALE_HEADROOM = 1.15;
 /** Pixels the top of the plot keeps free inside the viewBox. */
 const TOP_PADDING = 12;
+const SPLIT_TOP_PADDING = 10;
 const GRID_LINES = 5;
+const SPLIT_GRID_LINES = 3;
 
 export type ComparisonChartSerie = {
   /** Stable identity of the plotted row; the selection path. */
@@ -316,4 +322,98 @@ export function mergeComparisonSeries(
       ),
     };
   });
+}
+
+export type SplitPanel = {
+  period: number;
+  letter: string;
+  range: string;
+  /** Line style of this period, shown as a key even though panels draw solid. */
+  mark: string;
+  /** Sum over every plotted series and bucket of this period. */
+  total: number;
+  /**
+   * Percent against A over all plotted series, `null` when there is nothing to
+   * compare: panel A itself, or an A that totals 0 (rendered `—`, spec A3).
+   */
+  delta: number | null;
+  lines: { key: string; color: string; path: string }[];
+  grid: { y: string }[];
+  xFirst: string;
+  xLast: string;
+};
+
+/**
+ * One panel per period (design 3f).
+ *
+ * Two things make the panels readable side by side: they share the overlay's y
+ * scale, so a taller period looks taller instead of every panel being
+ * normalised to its own peak; and inside a panel the series are solid and told
+ * apart by colour, because the period is already named by the panel.
+ */
+export function buildSplitPanels(input: {
+  series: ComparisonChartSerie[];
+  periodCount: number;
+  anchorStart: Date;
+  periodDays: number;
+  /** Axis labels of period A, which every panel's x positions belong to. */
+  bucketLabels: string[];
+}): SplitPanel[] {
+  const { series, periodCount, anchorStart, periodDays, bucketLabels } = input;
+  if (series.length === 0) {
+    return [];
+  }
+
+  const scale = overlayScale(series, periodCount);
+  const xAt = (bucket: number) =>
+    scale.buckets <= 1
+      ? OVERLAY_WIDTH / 2
+      : (bucket / (scale.buckets - 1)) * OVERLAY_WIDTH;
+  const yAt = (value: number) =>
+    SPLIT_HEIGHT - (value / scale.max) * (SPLIT_HEIGHT - SPLIT_TOP_PADDING);
+  const totalOf = (period: number) =>
+    series.reduce(
+      (sum, serie) =>
+        sum +
+        periodValues(serie, period).reduce((acc, value) => acc + value, 0),
+      0,
+    );
+
+  const baselineTotal = totalOf(0);
+  const grid = Array.from({ length: SPLIT_GRID_LINES }, (_, index) => ({
+    y: ((1 - index / (SPLIT_GRID_LINES - 1)) * SPLIT_HEIGHT).toFixed(1),
+  }));
+
+  const panels: SplitPanel[] = [];
+  for (let period = 0; period < periodCount; period++) {
+    panels.push({
+      period,
+      letter: periodLabel(period),
+      range: periodRange(
+        shiftDays(anchorStart, -periodDays * period),
+        periodDays,
+      ),
+      mark: COMPARISON_MARKS[period] ?? '',
+      total: totalOf(period),
+      delta:
+        period === 0 ? null : deltaPercent(totalOf(period), baselineTotal),
+      lines: series
+        .map((serie) => ({
+          key: serie.key,
+          color: serie.color,
+          path: `M${periodValues(serie, period)
+            .map(
+              (value, bucket) =>
+                `${xAt(bucket).toFixed(1)},${yAt(value).toFixed(1)}`,
+            )
+            .join(' L')}`,
+        }))
+        .filter((line) => line.path !== 'M'),
+      grid,
+      xFirst: bucketLabels[0] ?? '',
+      xLast: bucketLabels[bucketLabels.length - 1] ?? '',
+    });
+  }
+
+  return panels;
 }
