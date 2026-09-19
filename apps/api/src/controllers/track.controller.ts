@@ -32,11 +32,13 @@ import type {
   ITrackHandlerPayload,
   ITrackPayload,
 } from '@openpanel/validation';
+import { zTrackBatchItem } from '@openpanel/validation';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { assocPath, pathOr, pick } from 'ramda';
+import type { z } from 'zod';
 import { applyBotSuspicion, stripBotProperties } from '@/bots/suspicion';
 import { HttpError } from '@/utils/errors';
-import { getDeviceId } from '@/utils/ids';
+import { getBatchDeviceIds, getDeviceId } from '@/utils/ids';
 
 export function getStringHeaders(headers: FastifyRequest['headers']) {
   return Object.entries(
@@ -159,33 +161,25 @@ interface TrackContext {
   asnInfo: AsnInfo;
 }
 
-async function buildContext(
-  request: FastifyRequest<{
-    Body: ITrackHandlerPayload;
-  }>,
-  validatedBody: ITrackHandlerPayload
-): Promise<TrackContext> {
+/** Everything a request's events share: identity, geo and the salted lookups. */
+type RequestScope = Omit<
+  TrackContext,
+  'timestamp' | 'identity' | 'deviceId' | 'sessionId'
+> & {
+  salts: { current: string; previous: string };
+};
+
+async function buildRequestScope(
+  request: FastifyRequest,
+  ipOverride: string | undefined
+): Promise<RequestScope> {
   const projectId = request.client?.projectId;
   if (!projectId) {
     throw new HttpError('Missing projectId', { status: 400 });
   }
 
-  const timestamp = getTimestamp(request.timestamp, validatedBody.payload);
-  const ip =
-    validatedBody.type === 'track' && validatedBody.payload.properties?.__ip
-      ? (validatedBody.payload.properties.__ip as string)
-      : request.clientIp;
+  const ip = ipOverride ?? request.clientIp;
   const ua = request.headers['user-agent'] ?? 'unknown/1.0';
-
-  const headers = getStringHeaders(request.headers);
-  const identity = getIdentity(validatedBody);
-  const profileId = identity?.profileId;
-
-  if (profileId && validatedBody.type === 'track') {
-    validatedBody.payload.profileId = profileId;
-  }
-
-  const overrideDeviceId = getOverrideDeviceId(validatedBody);
 
   // Get geo location (needed for track and identify) + ASN (bot detection).
   // Both hit the same MaxMind readers keyed on the same IP and are cached, so
@@ -196,22 +190,66 @@ async function buildContext(
     getSalts(),
   ]);
 
-  const deviceIdResult = await getDeviceId({
-    projectId,
-    ip,
-    ua,
-    salts,
-    overrideDeviceId,
-    eventTimeMs: timestamp.timestamp,
-  });
-
   return {
     projectId,
     ip,
     ua,
-    headers,
+    headers: getStringHeaders(request.headers),
     requestHeaders: request.headers,
     clientSecretAuth: request.clientSecretAuth ?? false,
+    geo,
+    asnInfo,
+    salts,
+  };
+}
+
+function getIpOverride(body: ITrackHandlerPayload): string | undefined {
+  return body.type === 'track' && body.payload.properties?.__ip
+    ? (body.payload.properties.__ip as string)
+    : undefined;
+}
+
+/**
+ * Pulls the identity out of a payload and, for a track event, writes the
+ * resolved profile id back onto it. Mutates `body.payload` the way the single
+ * handler always has.
+ */
+function takeIdentity(
+  body: ITrackHandlerPayload
+): IIdentifyPayload | undefined {
+  const identity = getIdentity(body);
+  const profileId = identity?.profileId;
+
+  if (profileId && body.type === 'track') {
+    body.payload.profileId = profileId;
+  }
+
+  return identity;
+}
+
+async function buildContext(
+  request: FastifyRequest<{
+    Body: ITrackHandlerPayload;
+  }>,
+  validatedBody: ITrackHandlerPayload
+): Promise<TrackContext> {
+  const scope = await buildRequestScope(request, getIpOverride(validatedBody));
+  const timestamp = getTimestamp(request.timestamp, validatedBody.payload);
+  const identity = takeIdentity(validatedBody);
+
+  const deviceIdResult = await getDeviceId({
+    projectId: scope.projectId,
+    ip: scope.ip,
+    ua: scope.ua,
+    salts: scope.salts,
+    overrideDeviceId: getOverrideDeviceId(validatedBody),
+    eventTimeMs: timestamp.timestamp,
+  });
+
+  const { salts: _salts, ...context } = scope;
+
+  return {
+    ...context,
     timestamp: {
       value: timestamp.timestamp,
       isFromPast: timestamp.isTimestampFromThePast,
@@ -219,8 +257,6 @@ async function buildContext(
     identity,
     deviceId: deviceIdResult.deviceId,
     sessionId: deviceIdResult.sessionId,
-    geo,
-    asnInfo,
   };
 }
 
@@ -483,6 +519,108 @@ export async function handler(
     deviceId: context.deviceId,
     sessionId: context.sessionId,
   });
+}
+
+/**
+ * POST /track/batch — many track events from ONE visitor in a single request.
+ *
+ * Each event keeps its own `properties.__timestamp`; the request time is only
+ * the fallback for events that don't carry one. Items are validated one by one
+ * so a single malformed event is reported by index instead of rejecting the
+ * whole batch.
+ */
+export async function handlerBatch(
+  request: FastifyRequest<{
+    Body: unknown;
+  }>,
+  reply: FastifyReply
+) {
+  const items = request.body as unknown[];
+
+  const failed: { index: number; error: string }[] = [];
+  const accepted: {
+    payload: ITrackPayload;
+    timeMs: number;
+    isFromPast: boolean;
+  }[] = [];
+
+  for (const [index, item] of items.entries()) {
+    const parsed = zTrackBatchItem.safeParse(item);
+
+    if (!parsed.success) {
+      failed.push({ index, error: formatBatchIssue(parsed.error) });
+      continue;
+    }
+
+    const { timestamp, isTimestampFromThePast } = getTimestamp(
+      request.timestamp,
+      parsed.data.payload
+    );
+
+    accepted.push({
+      payload: parsed.data.payload,
+      timeMs: timestamp,
+      isFromPast: isTimestampFromThePast,
+    });
+  }
+
+  if (accepted.length === 0) {
+    return reply
+      .status(200)
+      .send({ deviceId: '', sessionId: '', accepted: 0, failed });
+  }
+
+  // The session resolver folds forward over event time, so the batch has to be
+  // in order before it sees it — clients are free to send it shuffled.
+  accepted.sort((a, b) => a.timeMs - b.timeMs);
+
+  const firstBody: ITrackHandlerPayload = {
+    type: 'track',
+    payload: accepted[0]!.payload,
+  };
+  const scope = await buildRequestScope(request, getIpOverride(firstBody));
+
+  const devices = await getBatchDeviceIds({
+    projectId: scope.projectId,
+    ip: scope.ip,
+    ua: scope.ua,
+    salts: scope.salts,
+    overrideDeviceId: getOverrideDeviceId(firstBody),
+    eventTimesMs: accepted.map((item) => item.timeMs),
+  });
+
+  const { salts: _salts, ...context } = scope;
+
+  for (const [i, item] of accepted.entries()) {
+    const body: ITrackHandlerPayload = { type: 'track', payload: item.payload };
+    const device = devices[i]!;
+
+    await handleTrack(item.payload, {
+      ...context,
+      timestamp: { value: item.timeMs, isFromPast: item.isFromPast },
+      identity: takeIdentity(body),
+      deviceId: device.deviceId,
+      sessionId: device.sessionId,
+    });
+  }
+
+  const newest = devices.at(-1)!;
+
+  return reply.status(200).send({
+    deviceId: newest.deviceId,
+    sessionId: newest.sessionId,
+    accepted: accepted.length,
+    failed,
+  });
+}
+
+function formatBatchIssue(error: z.ZodError): string {
+  const issue = error.issues[0];
+  if (!issue) {
+    return 'Invalid event';
+  }
+  const path = issue.path.join('.');
+  return path ? `${path}: ${issue.message}` : issue.message;
 }
 
 export async function fetchDeviceId(

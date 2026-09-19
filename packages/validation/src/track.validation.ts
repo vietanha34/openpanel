@@ -224,6 +224,21 @@ export const zTrackHandlerPayload = z.discriminatedUnion('type', [
     .meta({ title: 'Assign Group' }),
 ]) satisfies z.ZodType<ITrackHandlerPayload>;
 
+/**
+ * One item of a `POST /track/batch` body. Only `track` is batchable — it is the
+ * only type that carries a per-event timestamp; the rest mutate profile/group
+ * state and gain nothing from being grouped into one request.
+ */
+export const zTrackBatchItem = z
+  .object({
+    type: z.literal('track'),
+    payload: zTrackPayload,
+  })
+  .meta({ title: 'TrackBatchItem' });
+
+/** Items are validated one by one so a single bad event doesn't reject the batch. */
+export const MAX_TRACK_BATCH_SIZE = 500;
+
 // Deprecated types for beta version of the SDKs
 
 export interface DeprecatedOpenpanelEventOptions {

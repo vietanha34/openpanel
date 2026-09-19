@@ -9,9 +9,13 @@
  */
 
 import type { IClickhouseSession } from '@openpanel/db';
-import { formatClickhouseDate, sessionBuffer } from '@openpanel/db';
+import {
+  formatClickhouseDate,
+  SESSION_TIMEOUT_MS,
+  sessionBuffer,
+} from '@openpanel/db';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { getDeviceId } from './ids';
+import { getBatchDeviceIds, getDeviceId } from './ids';
 
 const NOW = new Date('2026-06-08T12:00:00.000Z').getTime();
 const MINUTE = 60 * 1000;
@@ -106,5 +110,91 @@ describe('getDeviceId — session resolution', () => {
       'deviceId' in c[0] ? c[0].deviceId : ''
     );
     expect(new Set(deviceIds).size).toBe(2); // distinct current/previous hashes
+  });
+});
+
+// A batch carries many events from one visitor, each with its own timestamp, so
+// the session has to be resolved per event time (not once per request) while the
+// session blob is read only once for the whole batch.
+describe('getBatchDeviceIds — per-event session resolution', () => {
+  // Start of a session bucket, so the offsets below are easy to reason about.
+  const BUCKET_START = SESSION_TIMEOUT_MS * 100_000;
+
+  const batch = (eventTimesMs: number[]) => ({
+    projectId: 'proj-1',
+    ip: BASE.ip,
+    ua: BASE.ua,
+    salts: SALTS,
+    eventTimesMs,
+  });
+
+  it('gives every event the same session id when they sit inside the idle window', async () => {
+    vi.spyOn(sessionBuffer, 'getExistingSession').mockResolvedValue(null);
+
+    const [a, b] = await getBatchDeviceIds(
+      batch([BUCKET_START + MINUTE, BUCKET_START + 6 * MINUTE])
+    );
+
+    expect(a?.sessionId).toBeTruthy();
+    expect(b?.sessionId).toBe(a?.sessionId);
+  });
+
+  it('starts a new session for an event past the idle window', async () => {
+    vi.spyOn(sessionBuffer, 'getExistingSession').mockResolvedValue(null);
+
+    const [a, b] = await getBatchDeviceIds(
+      batch([
+        BUCKET_START + MINUTE,
+        BUCKET_START + MINUTE + SESSION_TIMEOUT_MS + 1,
+      ])
+    );
+
+    expect(b?.sessionId).not.toBe(a?.sessionId);
+  });
+
+  it('keeps one session across a bucket boundary when the events are close', async () => {
+    vi.spyOn(sessionBuffer, 'getExistingSession').mockResolvedValue(null);
+
+    const [a, b] = await getBatchDeviceIds(
+      batch([BUCKET_START - MINUTE, BUCKET_START + MINUTE])
+    );
+
+    expect(b?.sessionId).toBe(a?.sessionId);
+  });
+
+  it('extends the live session from the store for events inside its idle window', async () => {
+    vi.spyOn(sessionBuffer, 'getExistingSession').mockResolvedValue(
+      fakeSession('sess-live', NOW)
+    );
+
+    const [a, b] = await getBatchDeviceIds(
+      batch([NOW + MINUTE, NOW + 2 * MINUTE])
+    );
+
+    expect(a?.sessionId).toBe('sess-live');
+    expect(b?.sessionId).toBe('sess-live');
+  });
+
+  it('reads the store once per candidate, not once per event', async () => {
+    const spy = vi
+      .spyOn(sessionBuffer, 'getExistingSession')
+      .mockResolvedValue(null);
+
+    await getBatchDeviceIds(
+      batch([BUCKET_START, BUCKET_START + MINUTE, BUCKET_START + 2 * MINUTE])
+    );
+
+    expect(spy).toHaveBeenCalledTimes(2); // current + previous salt
+  });
+
+  it('resolves a caller-supplied device id for every event in the batch', async () => {
+    vi.spyOn(sessionBuffer, 'getExistingSession').mockResolvedValue(null);
+
+    const results = await getBatchDeviceIds({
+      ...batch([BUCKET_START, BUCKET_START + MINUTE]),
+      overrideDeviceId: 'cookie-abc',
+    });
+
+    expect(results.map((r) => r.deviceId)).toEqual(['cookie-abc', 'cookie-abc']);
   });
 });

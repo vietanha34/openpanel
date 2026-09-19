@@ -153,23 +153,33 @@ export async function validateSdkRequest(
   const profileFilter = client.project.filters.filter(
     (filter): filter is IProjectFilterProfileId => filter.type === 'profile_id'
   );
-  const profileId =
-    path<string | undefined>(['payload', 'profileId'], req.body) || // Track handler
-    path<string | undefined>(['profileId'], req.body); // Event handler
+  // A batch body (POST /track/batch) is an array of events — the guards below
+  // have to see every one of them, not just the shape of a single payload.
+  const bodyItems: unknown[] = Array.isArray(req.body) ? req.body : [req.body];
 
-  if (profileFilter.some((filter) => filter.profileId === profileId)) {
+  const profileIds = bodyItems.map(
+    (item) =>
+      path<string | undefined>(['payload', 'profileId'], item) || // Track handler
+      path<string | undefined>(['profileId'], item) // Event handler
+  );
+
+  if (
+    profileFilter.some((filter) => profileIds.includes(filter.profileId))
+  ) {
     throw createError('Ingestion: Profile id is blocked by project filter');
   }
 
-  const revenue =
-    path(['payload', 'properties', '__revenue'], req.body) ??
-    path(['properties', '__revenue'], req.body);
+  const hasRevenue = bodyItems.some(
+    (item) =>
+      (path(['payload', 'properties', '__revenue'], item) ??
+        path(['properties', '__revenue'], item)) !== undefined
+  );
 
   // Only allow revenue tracking if it was sent with a verified client secret
   // or if the project has allowUnsafeRevenueTracking enabled
   if (
     !(client.project.allowUnsafeRevenueTracking || secretVerified) &&
-    typeof revenue !== 'undefined'
+    hasRevenue
   ) {
     throw createError(
       'Ingestion: Revenue tracking is not allowed without a client secret'
